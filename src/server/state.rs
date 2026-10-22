@@ -19,6 +19,7 @@ pub struct Pane {
     pub screen: Screen,
     pub pty: Pty,
     pub last_title: String,
+    pub copy: Option<super::copy::CopyMode>,
 }
 
 impl Pane {
@@ -27,6 +28,9 @@ impl Pane {
         if self.screen.cols() != cols as usize || self.screen.rows() != rows as usize {
             self.screen.resize(cols as usize, rows as usize);
             self.pty.resize(cols, rows);
+            if let Some(c) = self.copy.as_mut() {
+                c.clamp(&self.screen);
+            }
         }
     }
 }

@@ -4,7 +4,9 @@
 //! connections feed it through one event channel, so no locking is needed.
 
 pub mod actions;
+pub mod copy;
 pub mod input;
+pub mod mouse;
 pub mod layout;
 pub mod render;
 pub mod sidebar;
@@ -52,6 +54,8 @@ pub struct Server {
     pub events: UnboundedSender<Event>,
     pub render_at: Option<Instant>,
     pub shutdown: bool,
+    /// Text from the last copy-mode yank.
+    pub paste_text: String,
     had_session: bool,
     next_pane: u32,
     next_window: u32,
@@ -148,6 +152,7 @@ impl Server {
             events,
             render_at: None,
             shutdown: false,
+            paste_text: String::new(),
             had_session: false,
             next_pane: 1,
             next_window: 1,
@@ -416,7 +421,12 @@ impl Server {
 
     fn pane_output(&mut self, id: PaneId, data: Vec<u8>) {
         let Some(p) = self.panes.get_mut(&id) else { return };
+        let history = p.screen.history_len();
         p.screen.feed(&data);
+        if let Some(copy) = p.copy.as_mut() {
+            copy.history_grew(p.screen.history_len().saturating_sub(history));
+            copy.clamp(&p.screen);
+        }
         let replies = p.screen.take_replies();
         if !replies.is_empty() {
             p.pty.write(replies);
@@ -579,6 +589,7 @@ impl Server {
         canvas.blit_canvas(content, content_x, 0, cw, rows);
         canvas.app_cursor = content.app_cursor;
         canvas.bracketed_paste = content.bracketed_paste;
+        canvas.mouse = self.cfg.mouse;
         canvas.cursor = content.cursor.filter(|&(x, y)| x < cw && y < rows).map(|(x, y)| (x + content_x, y));
         let view = self.sidebar_view(c, s);
         if sw > 0 {

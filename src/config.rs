@@ -35,9 +35,14 @@ pub struct Config {
     pub prefix: KeyCombo,
     pub shell: String,
     pub history_limit: usize,
+    /// Ask the terminal for mouse reports (sidebar clicks, wheel scrolling).
+    pub mouse: bool,
+    /// Send copied text to the terminal clipboard with OSC 52.
+    pub clipboard: bool,
     pub sidebar: SidebarCfg,
     pub prefix_keys: HashMap<KeyCombo, Action>,
     pub root_keys: HashMap<KeyCombo, Action>,
+    pub copy_keys: HashMap<KeyCombo, Action>,
 }
 
 #[derive(Deserialize, Default)]
@@ -54,6 +59,8 @@ struct RawOptions {
     prefix: Option<String>,
     shell: Option<String>,
     history_limit: Option<usize>,
+    mouse: Option<bool>,
+    clipboard: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -70,6 +77,7 @@ struct RawSidebar {
 struct RawKeys {
     prefix: BTreeMap<String, String>,
     root: BTreeMap<String, String>,
+    copy: BTreeMap<String, String>,
 }
 
 const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
@@ -113,26 +121,64 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("d", "detach"),
     ("a", "send-prefix"),
     ("r", "reload-config"),
+    ("[", "copy-mode"),
+    ("PageUp", "copy-mode"),
+    ("]", "paste-buffer"),
 ];
+
+const DEFAULT_COPY_KEYS: &[(&str, &str)] = &[
+    ("k", "copy-up"),
+    ("Up", "copy-up"),
+    ("j", "copy-down"),
+    ("Down", "copy-down"),
+    ("h", "copy-left"),
+    ("Left", "copy-left"),
+    ("l", "copy-right"),
+    ("Right", "copy-right"),
+    ("PageUp", "copy-page-up"),
+    ("C-b", "copy-page-up"),
+    ("PageDown", "copy-page-down"),
+    ("C-f", "copy-page-down"),
+    ("C-u", "copy-half-page-up"),
+    ("C-d", "copy-half-page-down"),
+    ("g", "copy-top"),
+    ("Home", "copy-top"),
+    ("G", "copy-bottom"),
+    ("End", "copy-bottom"),
+    ("0", "copy-line-start"),
+    ("$", "copy-line-end"),
+    ("v", "copy-select"),
+    ("Space", "copy-select"),
+    ("y", "copy-yank"),
+    ("Enter", "copy-yank"),
+    ("q", "copy-cancel"),
+    ("Escape", "copy-cancel"),
+];
+
+fn default_table(defaults: &[(&str, &str)]) -> HashMap<KeyCombo, Action> {
+    defaults
+        .iter()
+        .map(|(k, a)| (parse_key(k).expect("default key"), a.parse().expect("default action")))
+        .collect()
+}
 
 impl Default for Config {
     fn default() -> Self {
-        let prefix_keys = DEFAULT_PREFIX_KEYS
-            .iter()
-            .map(|(k, a)| (parse_key(k).expect("default key"), a.parse().expect("default action")))
-            .collect();
         Config {
             prefix: (crate::keys::Key::Char('a'), CTRL),
             shell: crate::pty::default_shell(),
             history_limit: 10_000,
+            mouse: true,
+            clipboard: true,
             sidebar: SidebarCfg {
                 position: Position::Left,
                 width: 24,
                 visible: true,
                 default_mode: SidebarMode::Windows,
             },
-            prefix_keys,
+            prefix_keys: default_table(DEFAULT_PREFIX_KEYS),
             root_keys: HashMap::new(),
+            copy_keys: default_table(DEFAULT_COPY_KEYS),
         }
     }
 }
@@ -167,6 +213,12 @@ impl Config {
         if let Some(h) = raw.options.history_limit {
             cfg.history_limit = h;
         }
+        if let Some(m) = raw.options.mouse {
+            cfg.mouse = m;
+        }
+        if let Some(c) = raw.options.clipboard {
+            cfg.clipboard = c;
+        }
         let sb = &mut cfg.sidebar;
         if let Some(v) = raw.sidebar.position {
             sb.position = v;
@@ -185,6 +237,7 @@ impl Config {
         }
         apply_table(&mut cfg.prefix_keys, &raw.keys.prefix, "prefix")?;
         apply_table(&mut cfg.root_keys, &raw.keys.root, "root")?;
+        apply_table(&mut cfg.copy_keys, &raw.keys.copy, "copy")?;
         Ok(cfg)
     }
 
@@ -201,7 +254,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::Dir;
+    use crate::action::{CopyCmd, Dir};
     use crate::keys::{Key, ALT};
 
     #[test]
@@ -212,6 +265,9 @@ mod tests {
         assert_eq!(c.prefix_keys[&(Key::Char('H'), 0)], Action::Resize(Dir::Left, 5));
         assert_eq!(c.sidebar.position, Position::Left);
         assert_eq!(c.sidebar.default_mode, SidebarMode::Windows);
+        assert!(c.mouse && c.clipboard);
+        assert_eq!(c.prefix_keys[&(Key::Char('['), 0)], Action::CopyMode);
+        assert_eq!(c.copy_keys[&(Key::Char('v'), 0)], Action::Copy(CopyCmd::Select));
     }
 
     #[test]
@@ -227,6 +283,8 @@ mod tests {
             [options]
             prefix = "C-b"
             shell = "/bin/zsh"
+            mouse = false
+            clipboard = false
             [sidebar]
             position = "right"
             width = 30
@@ -238,11 +296,15 @@ mod tests {
             "M-x" = "kill-pane"
             [keys.root]
             "M-n" = "next-window"
+            [keys.copy]
+            "x" = "copy-yank"
+            "q" = "none"
             "#,
         )
         .unwrap();
         assert_eq!(c.prefix, (Key::Char('b'), CTRL));
         assert_eq!(c.shell, "/bin/zsh");
+        assert!(!c.mouse && !c.clipboard);
         assert_eq!(c.sidebar.position, Position::Right);
         assert_eq!(c.sidebar.width, 30);
         assert!(!c.sidebar.visible);
@@ -251,6 +313,9 @@ mod tests {
         assert!(!c.prefix_keys.contains_key(&(Key::Char('d'), 0)));
         assert_eq!(c.prefix_keys[&(Key::Char('x'), ALT)], Action::KillPane);
         assert_eq!(c.root_keys[&(Key::Char('n'), ALT)], Action::NextWindow);
+        assert_eq!(c.copy_keys[&(Key::Char('x'), 0)], Action::Copy(CopyCmd::Yank));
+        assert!(!c.copy_keys.contains_key(&(Key::Char('q'), 0)));
+        assert_eq!(c.copy_keys[&(Key::Escape, 0)], Action::Copy(CopyCmd::Cancel));
         // untouched defaults remain
         assert_eq!(c.prefix_keys[&(Key::Char('z'), 0)], Action::ZoomPane);
     }
@@ -265,6 +330,30 @@ mod tests {
         assert!(Config::from_toml("[sidebar]\nwidth = 1").is_err());
         assert!(Config::from_toml("[unknown]\nx = 1").is_err());
         assert!(Config::from_toml("this is not toml").is_err());
+    }
+
+    #[test]
+    fn example_config_parses_and_matches_defaults() {
+        let c = Config::from_toml(include_str!("../config.example.toml")).unwrap();
+        let d = Config::default();
+        assert_eq!(c.prefix, d.prefix);
+        assert_eq!(c.history_limit, d.history_limit);
+        assert_eq!(c.sidebar.width, d.sidebar.width);
+        // every binding documented in the example is a real default, and vice versa
+        for (k, a) in &d.prefix_keys {
+            if let (Key::Char(ch), 0) = k
+                && ch.is_ascii_digit() && *ch != '1' {
+                    continue;
+                }
+            if matches!(k.0, Key::Left | Key::Right | Key::Up | Key::Down) {
+                continue;
+            }
+            assert_eq!(c.prefix_keys.get(k), Some(a), "{}", format_key(*k));
+        }
+        assert_eq!(c.copy_keys.len(), d.copy_keys.len());
+        for (k, a) in &d.copy_keys {
+            assert_eq!(c.copy_keys.get(k), Some(a), "{}", format_key(*k));
+        }
     }
 
     #[test]

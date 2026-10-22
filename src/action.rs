@@ -10,6 +10,28 @@ pub enum Dir {
     Down,
 }
 
+/// Movement and editing commands available in copy mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyCmd {
+    Up,
+    Down,
+    Left,
+    Right,
+    PageUp,
+    PageDown,
+    HalfPageUp,
+    HalfPageDown,
+    Top,
+    Bottom,
+    LineStart,
+    LineEnd,
+    /// Start (or clear) the selection.
+    Select,
+    /// Copy the selection (or current line) and leave copy mode.
+    Yank,
+    Cancel,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     NewWindow,
@@ -36,6 +58,9 @@ pub enum Action {
     Detach,
     SendPrefix,
     ReloadConfig,
+    CopyMode,
+    Copy(CopyCmd),
+    PasteBuffer,
 }
 
 fn number<T: FromStr>(arg: Option<&str>, name: &str) -> Result<T, String> {
@@ -99,6 +124,23 @@ impl FromStr for Action {
             "detach" => no_arg(Action::Detach),
             "send-prefix" => no_arg(Action::SendPrefix),
             "reload-config" => no_arg(Action::ReloadConfig),
+            "copy-mode" => no_arg(Action::CopyMode),
+            "paste-buffer" => no_arg(Action::PasteBuffer),
+            "copy-up" => no_arg(Action::Copy(CopyCmd::Up)),
+            "copy-down" => no_arg(Action::Copy(CopyCmd::Down)),
+            "copy-left" => no_arg(Action::Copy(CopyCmd::Left)),
+            "copy-right" => no_arg(Action::Copy(CopyCmd::Right)),
+            "copy-page-up" => no_arg(Action::Copy(CopyCmd::PageUp)),
+            "copy-page-down" => no_arg(Action::Copy(CopyCmd::PageDown)),
+            "copy-half-page-up" => no_arg(Action::Copy(CopyCmd::HalfPageUp)),
+            "copy-half-page-down" => no_arg(Action::Copy(CopyCmd::HalfPageDown)),
+            "copy-top" => no_arg(Action::Copy(CopyCmd::Top)),
+            "copy-bottom" => no_arg(Action::Copy(CopyCmd::Bottom)),
+            "copy-line-start" => no_arg(Action::Copy(CopyCmd::LineStart)),
+            "copy-line-end" => no_arg(Action::Copy(CopyCmd::LineEnd)),
+            "copy-select" => no_arg(Action::Copy(CopyCmd::Select)),
+            "copy-yank" => no_arg(Action::Copy(CopyCmd::Yank)),
+            "copy-cancel" => no_arg(Action::Copy(CopyCmd::Cancel)),
             _ => Err(format!("unknown action {name:?}")),
         }
     }
@@ -115,6 +157,9 @@ mod tests {
         assert_eq!("resize-left 5".parse(), Ok(Action::Resize(Dir::Left, 5)));
         assert_eq!("resize-down".parse(), Ok(Action::Resize(Dir::Down, 1)));
         assert_eq!("  focus-up ".parse(), Ok(Action::Focus(Dir::Up)));
+        assert_eq!("copy-mode".parse(), Ok(Action::CopyMode));
+        assert_eq!("copy-half-page-up".parse(), Ok(Action::Copy(CopyCmd::HalfPageUp)));
+        assert_eq!("paste-buffer".parse(), Ok(Action::PasteBuffer));
     }
 
     #[test]

@@ -2,10 +2,11 @@
 
 use std::path::PathBuf;
 
+use super::copy::{base64, CopyMode, Outcome};
 use super::layout::{neighbor, Axis, Node, PaneId, Rect};
 use super::state::{ClientId, Pane, Prompt, PromptKind, Session, SessionId, Window};
 use super::{Event, Server};
-use crate::action::{Action, Dir};
+use crate::action::{Action, CopyCmd, Dir};
 use crate::config::SidebarMode;
 use crate::protocol::ServerMsg;
 use crate::pty::{Pty, SpawnOpts};
@@ -25,7 +26,7 @@ impl Server {
         )
         .map_err(|e| format!("{e:#}"))?;
         let screen = Screen::new(cols as usize, rows as usize, self.cfg.history_limit);
-        self.panes.insert(id, Pane { id, screen, pty, last_title: String::new() });
+        self.panes.insert(id, Pane { id, screen, pty, last_title: String::new(), copy: None });
         Ok(())
     }
 
@@ -332,6 +333,21 @@ impl Server {
                 }
                 Ok(())
             }
+            Action::CopyMode => {
+                if let Some(p) = self.panes.get_mut(&self.sessions[si].active_window().active)
+                    && p.copy.is_none() {
+                        p.copy = Some(CopyMode::new(&p.screen));
+                    }
+                Ok(())
+            }
+            Action::Copy(cmd) => {
+                self.copy_command(cid, si, cmd);
+                Ok(())
+            }
+            Action::PasteBuffer => {
+                self.paste_buffer(si);
+                Ok(())
+            }
             Action::ReloadConfig => match self.reload() {
                 Ok(()) => {
                     self.message(cid, "config reloaded");
@@ -344,6 +360,45 @@ impl Server {
             self.message(cid, e);
         }
         self.mark_dirty();
+    }
+
+    fn copy_command(&mut self, cid: ClientId, si: usize, cmd: CopyCmd) {
+        let active = self.sessions[si].active_window().active;
+        let Some(p) = self.panes.get_mut(&active) else { return };
+        let Some(copy) = p.copy.as_mut() else { return };
+        match copy.apply(cmd, &p.screen) {
+            Outcome::Stay => {}
+            Outcome::Exit => p.copy = None,
+            Outcome::Yanked(text) => {
+                p.copy = None;
+                let note = format!("copied {} characters", text.chars().count());
+                if self.cfg.clipboard && !text.is_empty() {
+                    let osc = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
+                    self.send(cid, ServerMsg::Output(osc.into_bytes()));
+                }
+                self.paste_text = text;
+                self.message(cid, note);
+            }
+        }
+    }
+
+    fn paste_buffer(&mut self, si: usize) {
+        if self.paste_text.is_empty() {
+            return;
+        }
+        let active = self.sessions[si].active_window().active;
+        let Some(p) = self.panes.get_mut(&active) else { return };
+        p.copy = None;
+        let mut data = Vec::new();
+        let bracketed = p.screen.modes().bracketed_paste;
+        if bracketed {
+            data.extend_from_slice(b"\x1b[200~");
+        }
+        data.extend_from_slice(self.paste_text.replace('\n', "\r").as_bytes());
+        if bracketed {
+            data.extend_from_slice(b"\x1b[201~");
+        }
+        p.pty.write(data);
     }
 
     fn set_prompt(&mut self, cid: ClientId, kind: PromptKind, text: String) {

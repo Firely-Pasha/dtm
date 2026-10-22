@@ -5,6 +5,29 @@ pub const ALT: u8 = 2;
 pub const CTRL: u8 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MouseKind {
+    Press,
+    Release,
+    /// Motion with a button held.
+    Drag,
+    /// Motion with no button held.
+    Move,
+    WheelUp,
+    WheelDown,
+}
+
+/// An SGR mouse report. Coordinates are 0-based cells of the outer terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MouseEvent {
+    pub kind: MouseKind,
+    /// 0 = left, 1 = middle, 2 = right.
+    pub button: u8,
+    pub x: u16,
+    pub y: u16,
+    pub mods: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     Char(char),
     Enter,
@@ -24,6 +47,7 @@ pub enum Key {
     F(u8),
     /// A whole bracketed paste, markers included in `raw`.
     Paste,
+    Mouse(MouseEvent),
     /// Anything we don't interpret (mouse reports, unknown CSI ...).
     Other,
 }
@@ -135,6 +159,7 @@ pub fn format_key((key, mods): KeyCombo) -> String {
         Key::Delete => s.push_str("Delete"),
         Key::F(n) => s.push_str(&format!("F{n}")),
         Key::Paste => s.push_str("Paste"),
+        Key::Mouse(_) => s.push_str("Mouse"),
         Key::Other => s.push_str("Other"),
     }
     s
@@ -264,6 +289,13 @@ fn decode_csi(b: &[u8], flush: bool) -> Option<(KeyEvent, usize)> {
         return Some((ev(Key::Other, 0, raw), j + 1));
     }
     let params_str = std::str::from_utf8(&b[2..j]).unwrap_or("");
+    if let Some(rest) = params_str.strip_prefix('<') {
+        let key = match (parse_sgr_mouse(rest, fin), raw) {
+            (Some(m), _) => Key::Mouse(m),
+            (None, _) => Key::Other,
+        };
+        return Some((ev(key, 0, raw), j + 1));
+    }
     if params_str.starts_with(['<', '>', '=', '?']) || b[2..j].iter().any(|&c| (0x20..=0x2F).contains(&c)) {
         return Some((ev(Key::Other, 0, raw), j + 1));
     }
@@ -305,6 +337,33 @@ fn decode_csi(b: &[u8], flush: bool) -> Option<(KeyEvent, usize)> {
     };
     let mods = if key == Key::Other { 0 } else { mods };
     Some((ev(key, mods, raw), j + 1))
+}
+
+fn parse_sgr_mouse(params: &str, fin: u8) -> Option<MouseEvent> {
+    if fin != b'M' && fin != b'm' {
+        return None;
+    }
+    let mut it = params.split(';').map(|p| p.parse::<u16>().ok());
+    let (b, x, y) = (it.next()??, it.next()??, it.next()??);
+    if it.next().is_some() || x == 0 || y == 0 {
+        return None;
+    }
+    let mods = (if b & 4 != 0 { SHIFT } else { 0 }) | (if b & 8 != 0 { ALT } else { 0 }) | (if b & 16 != 0 { CTRL } else { 0 });
+    let low = (b & 3) as u8;
+    let (kind, button) = if b & 64 != 0 {
+        match low {
+            0 => (MouseKind::WheelUp, 0),
+            1 => (MouseKind::WheelDown, 0),
+            _ => return None,
+        }
+    } else if b & 32 != 0 {
+        if low == 3 { (MouseKind::Move, 0) } else { (MouseKind::Drag, low) }
+    } else if fin == b'm' {
+        (MouseKind::Release, low.min(2))
+    } else {
+        (MouseKind::Press, low.min(2))
+    };
+    Some(MouseEvent { kind, button, x: x - 1, y: y - 1, mods })
 }
 
 #[cfg(test)]
@@ -419,9 +478,32 @@ mod tests {
         assert!(decode(&mut partial, true).is_empty());
     }
 
+    fn mouse(input: &[u8]) -> MouseEvent {
+        match keys(input)[0].0 {
+            Key::Mouse(m) => m,
+            other => panic!("not a mouse event: {other:?}"),
+        }
+    }
+
     #[test]
-    fn mouse_and_unknown_are_other() {
-        assert_eq!(keys(b"\x1b[<0;10;5M"), vec![(Key::Other, 0)]);
+    fn decodes_sgr_mouse() {
+        let m = mouse(b"\x1b[<0;10;5M");
+        assert_eq!((m.kind, m.button, m.x, m.y), (MouseKind::Press, 0, 9, 4));
+        assert_eq!(mouse(b"\x1b[<0;10;5m").kind, MouseKind::Release);
+        assert_eq!(mouse(b"\x1b[<2;1;1M").button, 2);
+        assert_eq!(mouse(b"\x1b[<64;3;4M").kind, MouseKind::WheelUp);
+        assert_eq!(mouse(b"\x1b[<65;3;4M").kind, MouseKind::WheelDown);
+        assert_eq!(mouse(b"\x1b[<32;3;4M").kind, MouseKind::Drag);
+        assert_eq!(mouse(b"\x1b[<35;3;4M").kind, MouseKind::Move);
+        assert_eq!(mouse(b"\x1b[<16;3;4M").mods, CTRL);
+        assert_eq!(mouse(b"\x1b[<20;3;4M").mods, CTRL | SHIFT);
+    }
+
+    #[test]
+    fn malformed_mouse_and_unknown_are_other() {
+        assert_eq!(keys(b"\x1b[<0;0;5M"), vec![(Key::Other, 0)]);
+        assert_eq!(keys(b"\x1b[<0;1M"), vec![(Key::Other, 0)]);
+        assert_eq!(keys(b"\x1b[<66;1;1M"), vec![(Key::Other, 0)]);
         assert_eq!(keys(b"\x1b[97;5u"), vec![(Key::Other, 0)]);
     }
 }

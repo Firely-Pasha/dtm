@@ -134,6 +134,8 @@ async fn relay(
     let mut out = tokio::io::stdout();
     let mut stdin = tokio::io::stdin();
     let mut winch = signal(SignalKind::window_change())?;
+    let mut term = signal(SignalKind::terminate())?;
+    let mut hup = signal(SignalKind::hangup())?;
     let mut buf = vec![0u8; 8192];
     loop {
         tokio::select! {
@@ -144,6 +146,8 @@ async fn relay(
                 }
                 sink.send(encode(&ClientMsg::Input(buf[..n].to_vec()))).await?;
             }
+            _ = term.recv() => return Ok(Ending::Lost),
+            _ = hup.recv() => return Ok(Ending::Lost),
             _ = winch.recv() => {
                 let (cols, rows) = tty::size();
                 sink.send(encode(&ClientMsg::Resize { cols, rows })).await?;

@@ -13,6 +13,8 @@ pub struct Canvas {
     pub cursor: Option<(usize, usize)>,
     pub app_cursor: bool,
     pub bracketed_paste: bool,
+    /// Ask the terminal for SGR mouse reports.
+    pub mouse: bool,
 }
 
 impl Canvas {
@@ -24,6 +26,7 @@ impl Canvas {
             cursor: None,
             app_cursor: false,
             bracketed_paste: false,
+            mouse: false,
         }
     }
 
@@ -91,6 +94,19 @@ impl Canvas {
             for x in 0..w {
                 self.cells[(dy + y) * self.cols + dx + x] = *screen.cell(x, y);
             }
+        }
+        self.fix_edges(dx, dy, w, h);
+    }
+
+    /// Copy a block of cells (all rows the same length) to (dx, dy).
+    pub fn blit_cells(&mut self, rows: &[Vec<Cell>], dx: usize, dy: usize) {
+        let w = rows.first().map_or(0, |r| r.len()).min(self.cols.saturating_sub(dx));
+        let h = rows.len().min(self.rows.saturating_sub(dy));
+        if w == 0 || h == 0 {
+            return;
+        }
+        for (y, row) in rows.iter().take(h).enumerate() {
+            self.cells[(dy + y) * self.cols + dx..(dy + y) * self.cols + dx + w].copy_from_slice(&row[..w]);
         }
         self.fix_edges(dx, dy, w, h);
     }
@@ -179,8 +195,9 @@ impl Canvas {
                 x = cx;
             }
         }
-        let modes_changed =
-            self.app_cursor != prev.app_cursor || self.bracketed_paste != prev.bracketed_paste;
+        let modes_changed = self.app_cursor != prev.app_cursor
+            || self.bracketed_paste != prev.bracketed_paste
+            || self.mouse != prev.mouse;
         if body.is_empty() && !modes_changed && self.cursor == prev.cursor {
             return body;
         }
@@ -192,6 +209,9 @@ impl Canvas {
         }
         if self.bracketed_paste != prev.bracketed_paste {
             out.extend_from_slice(if self.bracketed_paste { b"\x1b[?2004h" } else { b"\x1b[?2004l" });
+        }
+        if self.mouse != prev.mouse {
+            out.extend_from_slice(if self.mouse { b"\x1b[?1000h\x1b[?1006h" } else { b"\x1b[?1000l\x1b[?1006l" });
         }
         if let Some((x, y)) = self.cursor {
             push_cup(&mut out, y, x);

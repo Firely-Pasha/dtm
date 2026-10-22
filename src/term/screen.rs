@@ -25,6 +25,18 @@ struct Saved {
     origin: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MouseTracking {
+    #[default]
+    Off,
+    /// Button presses and releases (1000).
+    Click,
+    /// Plus motion while a button is held (1002).
+    Drag,
+    /// All motion (1003).
+    Any,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Modes {
     pub app_cursor: bool,
@@ -34,6 +46,9 @@ pub struct Modes {
     pub insert: bool,
     pub bracketed_paste: bool,
     pub alt_screen: bool,
+    pub mouse: MouseTracking,
+    /// SGR mouse encoding (1006) was requested.
+    pub mouse_sgr: bool,
 }
 
 impl Default for Modes {
@@ -46,6 +61,8 @@ impl Default for Modes {
             insert: false,
             bracketed_paste: false,
             alt_screen: false,
+            mouse: MouseTracking::Off,
+            mouse_sgr: false,
         }
     }
 }
@@ -150,6 +167,21 @@ impl Screen {
 
     pub fn scrollback_len(&self) -> usize {
         self.scrollback.len()
+    }
+
+    /// Lines of history that can be scrolled back to (none on the alternate screen).
+    pub fn history_len(&self) -> usize {
+        if self.modes.alt_screen { 0 } else { self.scrollback.len() }
+    }
+
+    /// A line by absolute index: history first (oldest = 0), then the visible rows.
+    pub fn abs_line(&self, abs: usize) -> Option<&[Cell]> {
+        let h = self.history_len();
+        if abs < h {
+            self.scrollback.get(abs).map(|r| r.as_slice())
+        } else {
+            self.grid().rows.get(abs - h).map(|r| r.as_slice())
+        }
     }
 
     pub fn cell(&self, x: usize, y: usize) -> &Cell {
@@ -667,8 +699,20 @@ impl Screen {
                 }
                 1049 => self.set_alt_screen(on, true, false),
                 2004 => self.modes.bracketed_paste = on,
+                1000 => self.set_mouse(MouseTracking::Click, on),
+                1002 => self.set_mouse(MouseTracking::Drag, on),
+                1003 => self.set_mouse(MouseTracking::Any, on),
+                1006 => self.modes.mouse_sgr = on,
                 _ => {}
             }
+        }
+    }
+
+    fn set_mouse(&mut self, level: MouseTracking, on: bool) {
+        if on {
+            self.modes.mouse = level;
+        } else if self.modes.mouse == level {
+            self.modes.mouse = MouseTracking::Off;
         }
     }
 
@@ -1032,6 +1076,27 @@ mod tests {
     fn rep_repeats_last_char() {
         let s = screen(10, 1, "x\x1b[3b");
         assert_eq!(s.text(), vec!["xxxx"]);
+    }
+
+    #[test]
+    fn mouse_modes() {
+        let mut s = screen(4, 1, "\x1b[?1002h\x1b[?1006h");
+        assert_eq!(s.modes().mouse, MouseTracking::Drag);
+        assert!(s.modes().mouse_sgr);
+        s.feed(b"\x1b[?1000l");
+        assert_eq!(s.modes().mouse, MouseTracking::Drag);
+        s.feed(b"\x1b[?1002l\x1b[?1006l");
+        assert_eq!(s.modes().mouse, MouseTracking::Off);
+        assert!(!s.modes().mouse_sgr);
+    }
+
+    #[test]
+    fn absolute_lines_cover_history_and_screen() {
+        let s = screen(4, 2, "a\r\nb\r\nc\r\nd");
+        assert_eq!(s.history_len(), 2);
+        let text = |abs: usize| -> String { s.abs_line(abs).unwrap().iter().map(|c| c.ch).collect::<String>().trim_end().to_string() };
+        assert_eq!((0..4).map(text).collect::<Vec<_>>(), vec!["a", "b", "c", "d"]);
+        assert!(s.abs_line(4).is_none());
     }
 
     #[test]

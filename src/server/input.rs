@@ -46,6 +46,9 @@ impl Server {
         if c.prompt.is_some() {
             return self.prompt_key(cid, ev);
         }
+        if let Key::Mouse(m) = ev.key {
+            return self.handle_mouse(cid, m);
+        }
         if let Some(prefix_raw) = c.prefix.take() {
             self.mark_dirty();
             if let Some(action) = self.cfg.prefix_keys.get(&ev.combo()).cloned() {
@@ -61,7 +64,20 @@ impl Server {
             self.run_action(cid, action, None);
             return;
         }
+        if self.active_pane_in_copy_mode(cid) {
+            // Copy mode swallows keys it has no binding for.
+            if let Some(action) = self.cfg.copy_keys.get(&ev.combo()).cloned() {
+                self.run_action(cid, action, None);
+            }
+            return;
+        }
         self.forward(cid, ev.raw);
+    }
+
+    fn active_pane_in_copy_mode(&self, cid: ClientId) -> bool {
+        let sid = self.clients.get(&cid).and_then(|c| c.session);
+        let Some(s) = sid.and_then(|sid| self.sessions.iter().find(|s| s.id == sid)) else { return false };
+        self.panes.get(&s.active_window().active).is_some_and(|p| p.copy.is_some())
     }
 
     fn forward(&mut self, cid: ClientId, raw: Vec<u8>) {

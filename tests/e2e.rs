@@ -352,3 +352,90 @@ async fn fullscreen_apps_work_inside_dtm() {
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
+
+#[tokio::test]
+async fn copy_mode_scrolls_yanks_and_pastes() {
+    let env = Env::new("copy", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("seq 1 100\r");
+    h.wait_text("100").await;
+
+    h.send(&format!("{CTRL_A}["));
+    h.wait_text("[copy 0/").await;
+    h.send("g");
+    h.wait_for("top of history", |t| t.contains("seq 1 100") && t.contains("[copy")).await;
+    h.send("y");
+    h.wait_text("copied 11 characters").await;
+    h.wait_for("left copy mode", |t| !t.contains("[copy")).await;
+
+    h.send(&format!("{CTRL_A}]"));
+    h.wait_text("$ $ seq 1 100").await;
+    h.send("\x15");
+
+    // selection across lines: select two lines near the top and yank
+    h.send(&format!("{CTRL_A}[g"));
+    h.send("vjy");
+    h.wait_text("copied").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn mouse_clicks_wheel_and_forwarding() {
+    let env = Env::new("mouse", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    // the outer terminal is asked for SGR mouse reports
+    h.wait_for("mouse enabled", |_| true).await;
+    assert!(h.screen.modes().mouse != dtm::term::screen::MouseTracking::Off && h.screen.modes().mouse_sgr);
+
+    // sidebar: second window, then click back and forth
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send("echo w2marker$((1+1))\r");
+    h.wait_text("w2marker2").await;
+    h.send("\x1b[<0;5;3M\x1b[<0;5;3m"); // click "1 sh" (row 3, 1-based)
+    h.wait_for("window 1 shown", |t| !t.contains("w2marker2")).await;
+    h.send("\x1b[<0;5;4M\x1b[<0;5;4m"); // click "2 sh"
+    h.wait_text("w2marker2").await;
+
+    // clicking a pane focuses it
+    h.send(&format!("{CTRL_A}|"));
+    h.send("\x1b[<0;30;6M\x1b[<0;30;6m"); // left pane
+    h.send("echo clicked$((1+1))\r");
+    h.wait_text("clicked2").await;
+    let text = h.text();
+    let line = text.lines().find(|l| l.contains("clicked2")).unwrap();
+    let parts: Vec<&str> = line.split('│').collect();
+    assert!(parts.len() >= 3 && parts[1].contains("clicked2"), "{text}");
+
+    // wheel up with plain output enters copy mode; wheel down returns
+    h.send("seq 1 200\r");
+    h.wait_text("200").await;
+    h.send("\x1b[<64;30;10M");
+    h.wait_text("[copy").await;
+    h.send("\x1b[<65;30;10M".repeat(80).as_str());
+    h.wait_for("left copy mode", |t| !t.contains("[copy")).await;
+
+    // applications that enable mouse reporting get pane-relative events
+    h.send("printf '\\033[?1000h\\033[?1006h'; cat -v\r");
+    h.wait_text("2 cat").await;
+    h.send("\x1b[<0;34;7M");
+    h.wait_text("^[[<0;").await;
+    h.send("\x03");
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn mouse_can_be_disabled() {
+    let env = Env::new("nomouse", "[options]\nmouse = false\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("echo ready$((1+1))\r");
+    h.wait_text("ready2").await;
+    assert_eq!(h.screen.modes().mouse, dtm::term::screen::MouseTracking::Off);
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}

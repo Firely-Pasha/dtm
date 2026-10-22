@@ -46,6 +46,20 @@ pub fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+/// First item shown when the list is scrolled to keep the active one visible.
+fn scroll_offset(active_idx: usize, capacity: usize) -> usize {
+    if capacity > 0 && active_idx >= capacity { active_idx + 1 - capacity } else { 0 }
+}
+
+const FIRST_ITEM_ROW: usize = 2;
+
+/// Which item is drawn on screen row `row`, given how `draw` lays them out.
+pub fn item_at(items: usize, active_idx: usize, rows: usize, has_footer: bool, row: usize) -> Option<usize> {
+    let capacity = rows.saturating_sub(FIRST_ITEM_ROW + usize::from(has_footer));
+    let idx = scroll_offset(active_idx, capacity) + row.checked_sub(FIRST_ITEM_ROW)?;
+    (row < FIRST_ITEM_ROW + capacity && idx < items).then_some(idx)
+}
+
 const BOLD: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD };
 const DIM: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
 const REVERSE: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
@@ -73,10 +87,10 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
         canvas.put_str(text_x, 1, &format!(" {}", truncate(&view.subheader, text_w.saturating_sub(1))), DIM, text_w);
     }
     let footer_rows = usize::from(view.footer.is_some());
-    let first = 2;
+    let first = FIRST_ITEM_ROW;
     let capacity = rows.saturating_sub(first + footer_rows);
     let active_idx = view.items.iter().position(|i| i.active).unwrap_or(0);
-    let offset = if capacity > 0 && active_idx >= capacity { active_idx + 1 - capacity } else { 0 };
+    let offset = scroll_offset(active_idx, capacity);
     for (row, item) in view.items.iter().skip(offset).take(capacity).enumerate() {
         let y = first + row;
         let attrs = if item.active { REVERSE } else { Attrs::DEFAULT };
@@ -155,6 +169,17 @@ mod tests {
         // capacity is 4 rows (6 - 2 header rows)
         assert!(c.row_text(2).contains("w7"));
         assert!(c.row_text(5).contains("w10"));
+    }
+
+    #[test]
+    fn item_at_matches_the_drawn_layout() {
+        // 10 items, 6 rows, footer: capacity 3, active last -> items 7..9 shown
+        assert_eq!(item_at(10, 9, 6, true, 2), Some(7));
+        assert_eq!(item_at(10, 9, 6, true, 4), Some(9));
+        assert_eq!(item_at(10, 9, 6, true, 5), None);
+        assert_eq!(item_at(10, 9, 6, true, 1), None);
+        assert_eq!(item_at(2, 0, 10, false, 3), Some(1));
+        assert_eq!(item_at(2, 0, 10, false, 4), None);
     }
 
     #[test]

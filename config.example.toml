@@ -1,0 +1,76 @@
+# dtm configuration. Copy to ~/.config/dtm/config.toml (or set $DTM_CONFIG).
+# Every setting is optional; what is shown here are the defaults.
+# Apply changes to a running server with `dtm reload` or <prefix> r.
+
+[options]
+prefix = "C-a"          # key that starts a command (C-a, C-b, M-x, F1, ...)
+# shell = "/bin/bash"   # default: $SHELL
+history_limit = 10000   # scrollback lines kept per pane
+mouse = true            # sidebar clicks, pane focus, wheel scrolling
+                        # (hold Shift to select text with the terminal itself)
+clipboard = true        # copy-mode yanks also go to the terminal clipboard (OSC 52)
+
+[sidebar]
+position = "left"       # left | right
+width = 24              # columns, including the separator line
+visible = true
+default_mode = "windows"  # windows | sessions
+
+# Keys pressed after the prefix. A value of "none" removes a default binding.
+[keys.prefix]
+"c" = "new-window"
+"&" = "kill-window"
+"n" = "next-window"
+"p" = "prev-window"
+"1" = "select-window 1"       # ... "9" = "select-window 9"
+"," = "rename-window"
+"|" = "split-vertical"        # panes side by side
+"-" = "split-horizontal"      # panes stacked
+"h" = "focus-left"            # also Left/Right/Up/Down arrows
+"j" = "focus-down"
+"k" = "focus-up"
+"l" = "focus-right"
+"o" = "focus-next"
+"H" = "resize-left 5"
+"J" = "resize-down 5"
+"K" = "resize-up 5"
+"L" = "resize-right 5"
+"z" = "zoom-pane"
+"x" = "kill-pane"
+"S" = "new-session"
+"$" = "rename-session"
+"(" = "prev-session"
+")" = "next-session"
+"b" = "toggle-sidebar"
+"s" = "toggle-sidebar-mode"     # windows list <-> sessions list
+"[" = "copy-mode"
+"PageUp" = "copy-mode"
+"]" = "paste-buffer"
+"d" = "detach"
+"a" = "send-prefix"           # <prefix> a sends a literal prefix key
+"r" = "reload-config"
+
+# Keys that work without the prefix, e.g.:
+[keys.root]
+# "M-n" = "next-window"
+# "M-p" = "prev-window"
+# "M-1" = "select-window 1"
+
+# Keys while in copy mode.
+[keys.copy]
+"k" = "copy-up"
+"j" = "copy-down"
+"h" = "copy-left"
+"l" = "copy-right"
+"PageUp" = "copy-page-up"
+"PageDown" = "copy-page-down"
+"C-u" = "copy-half-page-up"
+"C-d" = "copy-half-page-down"
+"g" = "copy-top"
+"G" = "copy-bottom"
+"0" = "copy-line-start"
+"$" = "copy-line-end"
+"v" = "copy-select"           # start/clear selection
+"y" = "copy-yank"             # copy selection (or current line) and leave
+"q" = "copy-cancel"
+"Escape" = "copy-cancel"
