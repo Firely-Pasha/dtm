@@ -65,7 +65,8 @@ pub fn item_at(items: usize, active_idx: usize, rows: usize, has_footer: bool, r
 
 const BOLD: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD };
 const DIM: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
-const SELECTED: Attrs = Attrs { fg: Color::Idx(15), bg: Color::Idx(4), flags: flags::BOLD };
+/// Colour-independent, so it stays readable in any terminal theme.
+const SELECTED: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD | flags::REVERSE };
 const FOCUS_SEP: Attrs = Attrs { fg: Color::Idx(2), bg: Color::Default, flags: 0 };
 const REVERSE: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
 
@@ -100,6 +101,9 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
         let y = first + row;
         let attrs = if item.selected {
             SELECTED
+        } else if item.active && view.focused {
+            // Only the selection is inverted while navigating.
+            BOLD
         } else if item.active {
             REVERSE
         } else {
@@ -202,7 +206,11 @@ mod tests {
         v.focused = true;
         draw(&mut c, 0, 14, Position::Left, &v);
         assert_eq!(c.cell(0, 3).ch, '›');
-        assert!(c.cell(1, 3).attrs.has(flags::BOLD) && !c.cell(1, 3).attrs.has(flags::REVERSE));
+        // the selection is inverted and bold; the active row is only bold while focused
+        assert!(c.cell(1, 3).attrs.has(flags::BOLD) && c.cell(1, 3).attrs.has(flags::REVERSE));
+        assert!(c.cell(1, 2).attrs.has(flags::BOLD) && !c.cell(1, 2).attrs.has(flags::REVERSE));
+        assert_eq!(c.cell(1, 3).attrs.fg, Color::Default);
+        assert_eq!(c.cell(1, 3).attrs.bg, Color::Default);
         assert_eq!(c.cell(0, 2).ch, ' ');
         assert_eq!(c.cell(13, 0).attrs.fg, Color::Idx(2));
     }
