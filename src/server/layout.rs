@@ -115,6 +115,18 @@ impl Node {
         }
     }
 
+    /// Put `new` where leaf `target` is.
+    pub fn replace(&mut self, target: PaneId, new: PaneId) -> bool {
+        match self {
+            Node::Leaf(id) if *id == target => {
+                *id = new;
+                true
+            }
+            Node::Leaf(_) => false,
+            Node::Split { a, b, .. } => a.replace(target, new) || b.replace(target, new),
+        }
+    }
+
     /// Remove `target`. Returns the remaining tree (None if it was the only
     /// pane) and the pane that should receive focus.
     pub fn remove(self, target: PaneId) -> (Option<Node>, Option<PaneId>) {
@@ -236,6 +248,14 @@ mod tests {
         let r = rects(&tree(), 2, 2);
         assert_eq!(r[0].1, Rect::new(0, 0, 2, 2));
         assert_eq!(r[1].1.w, 0);
+    }
+
+    #[test]
+    fn replace_swaps_a_leaf() {
+        let mut t = tree();
+        assert!(t.replace(2, 9));
+        assert!(!t.replace(2, 10));
+        assert_eq!(t.leaves(), vec![1, 9, 3]);
     }
 
     #[test]

@@ -6,6 +6,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::net::UnixStream;
+use crate::project::Plan;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,10 @@ pub enum PaneDir {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientMsg {
     Attach { mode: AttachMode, name: Option<String>, cols: u16, rows: u16, cwd: PathBuf },
+    /// Attach to the project's session, creating it from the plan if it is not running.
+    OpenProject { plan: Plan, source: PathBuf, cols: u16, rows: u16 },
+    /// Describe a session as a project (for export).
+    Snapshot { session: Option<String>, pane: Option<u32> },
     Input(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     Detach,
@@ -51,6 +56,14 @@ pub struct SessionInfo {
     pub attached: usize,
 }
 
+/// A running session described as a project.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Snapshot {
+    pub plan: Plan,
+    /// The project file the session was opened from, if any.
+    pub source: Option<PathBuf>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ServerMsg {
     Output(Vec<u8>),
@@ -59,6 +72,7 @@ pub enum ServerMsg {
     Error(String),
     Sessions(Vec<SessionInfo>),
     Text(String),
+    Snapshot(Snapshot),
     Ok,
 }
 

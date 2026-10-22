@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::copy::{base64, CopyMode, Outcome};
 use super::layout::{neighbor, Axis, Node, PaneId, Rect};
-use super::state::{ClientId, Pane, Prompt, PromptKind, Session, SessionId, Window};
+use super::state::{ClientId, Pane, PaneSpec, Prompt, PromptKind, Session, SessionId, Window};
 use super::{Event, Server};
 use crate::action::{Action, CopyCmd, Dir, SidebarCmd};
 use crate::config::{Position, SidebarMode};
@@ -43,14 +43,15 @@ impl Server {
         let (cols, rows) = (size.0.max(1), size.1.max(1));
         let tx = self.events.clone();
         let pty = Pty::spawn(
-            SpawnOpts { shell: self.cfg.shell.clone(), args: vec![], env: self.pane_env(id), cwd, cols, rows },
+            SpawnOpts { shell: self.cfg.shell.clone(), args: vec![], env: self.pane_env(id), cwd: cwd.clone(), cols, rows },
             move |ev| {
                 let _ = tx.send(Event::Pane { id, ev });
             },
         )
         .map_err(|e| format!("{e:#}"))?;
         let screen = Screen::new(cols as usize, rows as usize, self.cfg.history_limit);
-        self.panes.insert(id, Pane { id, screen, pty, last_title: String::new(), copy: None });
+        let spec = PaneSpec { cwd, command: None };
+        self.panes.insert(id, Pane { id, spec, screen, pty, last_title: String::new(), copy: None });
         Ok(())
     }
 
@@ -67,6 +68,8 @@ impl Server {
             zoomed: false,
             activity: false,
             bell: false,
+            plan: None,
+            pending: false,
         })
     }
 
@@ -91,6 +94,7 @@ impl Server {
             size,
             owner: None,
             cwd: cwd.unwrap_or_default(),
+            project: None,
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;
@@ -197,25 +201,29 @@ impl Server {
                 self.refresh_name(si, wi);
                 self.relayout(sid);
             }
-            (None, _) => {
-                let s = &mut self.sessions[si];
-                s.windows.remove(wi);
-                if s.windows.is_empty() {
-                    self.remove_session(sid);
-                } else {
-                    if wi < s.active {
-                        s.active -= 1;
-                    } else if wi == s.active {
-                        s.active = wi.min(s.windows.len() - 1);
-                        let w = &mut s.windows[s.active];
-                        w.activity = false;
-                        w.bell = false;
-                    }
-                    s.active = s.active.min(s.windows.len() - 1);
-                }
-            }
+            (None, _) => self.drop_window(si, wi),
         }
         self.mark_dirty();
+    }
+
+    /// Remove window `wi` (which has no panes left), and the session if it was the last.
+    fn drop_window(&mut self, si: usize, wi: usize) {
+        let sid = self.sessions[si].id;
+        let s = &mut self.sessions[si];
+        s.windows.remove(wi);
+        if s.windows.is_empty() {
+            self.remove_session(sid);
+            return;
+        }
+        if wi < s.active {
+            s.active -= 1;
+        } else if wi == s.active {
+            s.active = wi.min(s.windows.len() - 1);
+            let w = &mut s.windows[s.active];
+            w.activity = false;
+            w.bell = false;
+        }
+        s.active = s.active.min(s.windows.len() - 1);
     }
 
     pub fn locate_pane(&self, pane: PaneId) -> Option<(usize, usize)> {
@@ -224,7 +232,7 @@ impl Server {
         })
     }
 
-    fn remove_session(&mut self, sid: SessionId) {
+    pub(super) fn remove_session(&mut self, sid: SessionId) {
         let Some(idx) = self.session_index(sid) else { return };
         let removed = self.sessions.remove(idx);
         // Any panes still alive are dropped (and hung up).
@@ -391,6 +399,18 @@ impl Server {
                 self.write_active(si, trigger.key);
                 Ok(())
             }
+            Action::RespawnPane => {
+                let id = self.sessions[si].active_window().active;
+                self.set_prompt(cid, PromptKind::ConfirmRespawnPane(id), String::new(), "respawn pane? (y/n)");
+                Ok(())
+            }
+            Action::RespawnWindow => {
+                let w = self.sessions[si].active_window();
+                let label = format!("respawn window {}? (y/n)", w.name());
+                self.set_prompt(cid, PromptKind::ConfirmRespawnWindow(w.id), String::new(), label);
+                Ok(())
+            }
+            Action::ExportProject => self.export_project(si).map(|p| self.message(cid, format!("exported to {}", p.display()))),
             Action::FocusSidebar => self.enter_sidebar(cid),
             Action::Sidebar(cmd) => self.sidebar_command(cid, cmd),
             Action::PasteBuffer => {
@@ -632,6 +652,21 @@ impl Server {
                 }
             }
             PromptKind::ConfirmKillSession(id) => self.kill_session(id),
+            PromptKind::ConfirmRespawnPane(id) => {
+                if let Err(e) = self.respawn_pane(id) {
+                    self.message(cid, e);
+                }
+            }
+            PromptKind::ConfirmRespawnWindow(id) => {
+                let found = self.sessions.iter().enumerate().find_map(|(si, s)| {
+                    s.windows.iter().position(|w| w.id == id).map(|wi| (si, wi))
+                });
+                if let Some((si, wi)) = found
+                    && let Err(e) = self.respawn_window(si, wi)
+                {
+                    self.message(cid, e);
+                }
+            }
         }
         self.mark_dirty();
     }
@@ -641,6 +676,12 @@ impl Server {
     pub fn kill_window(&mut self, sid: SessionId, wi: usize) {
         let Some(s) = self.sessions.iter().find(|s| s.id == sid) else { return };
         let Some(w) = s.windows.get(wi) else { return };
+        if w.pending {
+            let si = self.session_index(sid).unwrap_or(0);
+            self.drop_window(si, wi);
+            self.mark_dirty();
+            return;
+        }
         for p in w.root.leaves() {
             self.close_pane(p);
         }
@@ -741,6 +782,14 @@ impl Server {
                     let (id, label) = (s.id, format!("kill session {} ({})? (y/n)", sel + 1, s.name));
                     self.set_prompt(cid, PromptKind::ConfirmKillSession(id), String::new(), label);
                 }
+            },
+            SidebarCmd::Respawn => match mode {
+                SidebarMode::Windows => {
+                    let w = &self.sessions[si].windows[sel];
+                    let (id, label) = (w.id, format!("respawn window {} ({})? (y/n)", sel + 1, w.name()));
+                    self.set_prompt(cid, PromptKind::ConfirmRespawnWindow(id), String::new(), label);
+                }
+                SidebarMode::Sessions => return Err("respawn works on windows".into()),
             },
             SidebarCmd::Rename => match mode {
                 SidebarMode::Windows => {

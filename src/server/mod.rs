@@ -8,6 +8,7 @@ pub mod copy;
 pub mod input;
 pub mod ipc;
 pub mod mouse;
+pub mod project;
 pub mod layout;
 pub mod render;
 pub mod sidebar;
@@ -192,6 +193,12 @@ impl Server {
     }
 
     pub fn handle(&mut self, ev: Event) {
+        self.handle_event(ev);
+        // A window that just became visible starts before the next event sees it.
+        self.start_visible_windows();
+    }
+
+    fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Connected { id, tx } => {
                 self.clients.insert(id, Client::new(id, tx));
@@ -212,6 +219,11 @@ impl Server {
     fn client_msg(&mut self, cid: ClientId, msg: ClientMsg) {
         match msg {
             ClientMsg::Attach { mode, name, cols, rows, cwd } => self.attach_msg(cid, mode, name, cols, rows, cwd),
+            ClientMsg::OpenProject { plan, source, cols, rows } => self.open_project_msg(cid, plan, source, cols, rows),
+            ClientMsg::Snapshot { session, pane } => match self.snapshot(session.as_deref(), pane) {
+                Ok(snap) => self.send(cid, ServerMsg::Snapshot(snap)),
+                Err(e) => self.send(cid, ServerMsg::Error(e)),
+            },
             ClientMsg::Input(data) => self.handle_input(cid, data),
             ClientMsg::Resize { cols, rows } => self.client_resize(cid, cols, rows),
             ClientMsg::Detach => self.detach(cid),
@@ -473,6 +485,9 @@ impl Server {
 
     pub fn refresh_name(&mut self, si: usize, wi: usize) -> bool {
         let w = &self.sessions[si].windows[wi];
+        if w.pending {
+            return false;
+        }
         let name = match self.panes.get(&w.active) {
             Some(p) if !p.screen.title.is_empty() => p.screen.title.clone(),
             Some(p) => p.pty.process_name().unwrap_or_else(|| "sh".into()),
@@ -547,6 +562,7 @@ impl Server {
 
     pub fn flush(&mut self) {
         self.render_at = None;
+        self.start_visible_windows();
         self.clamp_sidebar_focus();
         let mut contents: HashMap<SessionId, Canvas> = HashMap::new();
         let mut frames: Vec<(ClientId, Canvas)> = Vec::new();
@@ -584,6 +600,9 @@ impl Server {
                         }
                         if w.activity {
                             marks.push('●');
+                        }
+                        if w.pending {
+                            marks.push('…');
                         }
                         Item { label: format!("{} {}", i + 1, w.name()), marks, active: i == s.active, selected: c.sidebar_focus == Some(i) }
                     })

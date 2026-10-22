@@ -5,6 +5,7 @@ pub mod debug;
 pub mod keys;
 pub mod paths;
 pub mod procinfo;
+pub mod project;
 pub mod protocol;
 pub mod pty;
 pub mod server;

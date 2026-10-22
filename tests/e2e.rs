@@ -37,15 +37,26 @@ impl Env {
     }
 
     fn client(&self, args: &[&str], cols: u16, rows: u16) -> Harness {
+        self.client_in(None, args, cols, rows)
+    }
+
+    fn client_in(&self, cwd: Option<&std::path::Path>, args: &[&str], cols: u16, rows: u16) -> Harness {
         let vars = self.vars();
         let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        Harness::spawn(env!("CARGO_BIN_EXE_dtm"), args, &pairs, cols, rows)
+        Harness::spawn_in(env!("CARGO_BIN_EXE_dtm"), args, &pairs, cols, rows, cwd)
     }
 
     fn run(&self, args: &[&str]) -> (bool, String) {
+        self.run_with(args, &[])
+    }
+
+    fn run_with(&self, args: &[&str], extra: &[(&str, &str)]) -> (bool, String) {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_dtm"));
         cmd.args(args).env_remove("DTM_PANE");
         for (k, v) in self.vars() {
+            cmd.env(k, v);
+        }
+        for (k, v) in extra {
             cmd.env(k, v);
         }
         let out = cmd.output().unwrap();
@@ -934,4 +945,260 @@ async fn prefix_hjkl_resize_while_arrows_move_focus() {
     assert!(!right_pane_text(&h).contains("left2"));
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
+}
+
+// ---- projects ----
+
+fn write(path: &std::path::Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+fn lines(path: &std::path::Path) -> usize {
+    std::fs::read_to_string(path).map(|t| t.lines().count()).unwrap_or(0)
+}
+
+/// Poll a condition that is not visible on the screen.
+async fn eventually(what: &str, cond: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !cond() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// Processes whose command line is exactly `args`.
+fn count_procs(args: &[&str]) -> usize {
+    let want = format!("{}\0", args.join("\0"));
+    std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|e| std::fs::read(e.path().join("cmdline")).ok())
+        .filter(|c| c == want.as_bytes())
+        .count()
+}
+
+#[tokio::test]
+async fn project_runs_commands_in_their_paths_and_starts_windows_lazily() {
+    let env = Env::new("proj-open", "");
+    let proj = env.dir.join("proj");
+    std::fs::create_dir_all(proj.join("sub")).unwrap();
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: demo\nwindows:\n  - name: edit\n    layout:\n      split: columns\n      panes:\n        - command: echo A$((1+1)); pwd\n        - path: sub\n          command: echo B$((2+2)); pwd\n  - name: second\n    command: touch started\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text("A2").await;
+    h.wait_text("B4").await;
+    let text = h.text();
+    assert!(text.contains("1 edit") && text.contains("2 second"), "{text}");
+    assert!(text.lines().any(|l| l.ends_with("proj") || l.contains("proj ")), "root pane cwd:\n{text}");
+    assert!(text.contains("proj/sub"), "sub pane cwd:\n{text}");
+    assert!(!proj.join("started").exists(), "window 2 must not have started yet");
+
+    h.send(&format!("{CTRL_A}2"));
+    let started = proj.join("started");
+    eventually("lazy window started", || started.exists()).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn project_lazy_false_starts_everything_at_once() {
+    let env = Env::new("proj-eager", "");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "lazy: false\nwindows:\n  - command: echo one\n  - command: touch eager\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("one").await;
+    let eager = proj.join("eager");
+    eventually("eager window started", || eager.exists()).await;
+}
+
+#[tokio::test]
+async fn plain_dtm_opens_the_project_here_and_reattaches() {
+    let env = Env::new("proj-plain", "");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "name: again\nwindows:\n  - name: w\n    command: echo X >> ran.txt\n");
+    let mut h = env.client_in(Some(&proj), &[], 100, 30);
+    h.wait_text("1 w").await;
+    let ran = proj.join("ran.txt");
+    eventually("command ran", || lines(&ran) == 1).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+    let (_, out) = env.run(&["ls"]);
+    assert!(out.contains("again: 1 window"), "{out}");
+
+    let mut h2 = env.client_in(Some(&proj), &[], 100, 30);
+    h2.wait_text("1 w").await;
+    h2.send("echo SYNC$((10+1))\r");
+    h2.wait_text("SYNC11").await;
+    assert_eq!(lines(&ran), 1, "an existing session must not run its commands again");
+    let (_, out) = env.run(&["ls"]);
+    assert!(out.contains("again: 1 window") && !out.contains("1: "), "{out}");
+}
+
+#[tokio::test]
+async fn invalid_project_is_reported_before_anything_starts() {
+    let env = Env::new("proj-bad", "");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "windows:\n  - layout:\n      split: rows\n      panes:\n        - {}\n");
+    let (ok, out) = env.run_with(&["open", proj.to_str().unwrap()], &[]);
+    assert!(!ok && out.contains("split needs at least 2 panes"), "{out}");
+}
+
+#[tokio::test]
+async fn export_writes_the_layout_and_reopens() {
+    let env = Env::new("proj-export", "");
+    // A duration no other run's processes share, so counting them is reliable.
+    let secs = (20000 + std::process::id() % 10000).to_string();
+    let mut h = env.client_in(Some(&env.dir), &["new", "-s", "ex"], 120, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send(&format!("echo M$((1+1)); sleep {secs}\r"));
+    h.wait_text("M2").await;
+
+    let out = env.dir.join("out/project.dtm.yaml");
+    let target = out.to_str().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let yaml = loop {
+        let (ok, msg) = env.run(&["export", target, "-t", "ex"]);
+        assert!(ok, "{msg}");
+        let y = std::fs::read_to_string(&out).unwrap();
+        if y.contains(&format!("sleep {secs}")) {
+            break y;
+        }
+        assert!(std::time::Instant::now() < deadline, "no sleep in export:\n{y}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert!(yaml.contains("split: columns") && yaml.contains(&format!("command: sleep {secs}")), "{yaml}");
+    assert!(!yaml.contains("root"), "{yaml}");
+
+    // The exported file opens as a second session with the same two panes.
+    write(&out, &yaml.replace("name: ex", "name: ex2"));
+    let mut h2 = env.client(&["open", target], 120, 30);
+    h2.wait_text("1 sh").await;
+    h2.wait_for("both panes", |t| t.lines().any(|l| l.matches('│').count() >= 2)).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while count_procs(&["sleep", &secs]) != 2 {
+        assert!(std::time::Instant::now() < deadline, "second session did not run the command: {}\n{}\n{}", count_procs(&["sleep", &secs]), h2.text(), env.run(&["ls"]).1);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn export_updates_the_opened_file_and_keeps_its_name() {
+    let env = Env::new("proj-update", "");
+    let proj = env.dir.join("proj");
+    let file = proj.join("project.dtm.yaml");
+    write(&file, "# my comment\nname: upd\nroot: .\nwindows:\n  - name: a\n    lazy: true\n  - name: b\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("1 a").await;
+    let (ok, msg) = env.run(&["export", "-t", "upd"]);
+    assert!(ok, "{msg}");
+    let yaml = std::fs::read_to_string(&file).unwrap();
+    assert!(yaml.contains("name: upd") && yaml.contains("name: a") && yaml.contains("name: b"), "{yaml}");
+    assert!(!yaml.contains("root") && !yaml.contains("my comment"), "{yaml}");
+    assert!(msg.contains("comments"), "{msg}");
+}
+
+#[tokio::test]
+async fn respawn_pane_restarts_it_with_a_new_id() {
+    let env = Env::new("respawn-pane", "");
+    let proj = env.dir.join("proj");
+    let secs = (20000 + std::process::id() % 10000).to_string();
+    write(&proj.join("project.dtm.yaml"), &format!("name: rp\nwindows:\n  - command: echo Z >> runs.txt; exec sleep {secs}\n"));
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    let runs = proj.join("runs.txt");
+    eventually("first run", || lines(&runs) == 1).await;
+    eventually("sleep up", || count_procs(&["sleep", &secs]) == 1).await;
+    let (ok, out) = env.run(&["query", "-t", "1", "#{pane_id}"]);
+    assert!(ok && out.trim() == "1", "{out}");
+
+    h.send(&format!("{CTRL_A}R"));
+    h.wait_text("respawn pane? (y/n)").await;
+    h.send("y");
+    eventually("second run", || lines(&runs) == 2).await;
+    eventually("old process gone", || count_procs(&["sleep", &secs]) == 1).await;
+    let (ok, out) = env.run(&["query", "-t", "2", "#{pane_id}"]);
+    assert!(ok && out.trim() == "2", "{out}");
+    let (ok, _) = env.run(&["query", "-t", "1", "#{pane_id}"]);
+    assert!(!ok, "the old pane id must be gone");
+    // Answering no changes nothing.
+    h.send(&format!("{CTRL_A}R"));
+    h.wait_text("respawn pane? (y/n)").await;
+    h.send("n");
+    h.wait_for("prompt closed", |t| !t.contains("respawn pane?")).await;
+    assert_eq!(lines(&runs), 2);
+}
+
+#[tokio::test]
+async fn respawn_window_restores_the_project_layout() {
+    let env = Env::new("respawn-window", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: rw\nwindows:\n  - layout:\n      split: columns\n      panes:\n        - command: echo W >> w.txt\n        - command: echo W >> w.txt\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    let w = proj.join("w.txt");
+    eventually("both ran", || lines(&w) == 2).await;
+    h.send(&format!("{CTRL_A}-"));
+    h.wait_for("three panes", |t| t.lines().any(|l| l.matches('─').count() > 3)).await;
+
+    h.send(&format!("{CTRL_A}\x1br"));
+    h.wait_text("respawn window").await;
+    h.send("y");
+    eventually("commands ran again", || lines(&w) == 4).await;
+    h.wait_for("extra pane gone", |t| !t.lines().any(|l| l.matches('─').count() > 3)).await;
+    h.send("echo SYNC$((10+1))\r");
+    h.wait_text("SYNC11").await;
+    assert_eq!(lines(&w), 4);
+}
+
+#[tokio::test]
+async fn respawn_of_a_plain_pane_keeps_its_directory() {
+    let env = Env::new("respawn-plain", "");
+    let sub = env.dir.join("work/sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let mut h = env.client_in(Some(&sub), &["new"], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send("cd /tmp\r");
+    h.send(&format!("{CTRL_A}R"));
+    h.wait_text("respawn pane? (y/n)").await;
+    h.send("y");
+    h.send("echo P$((1+1)); pwd\r");
+    h.wait_text("P2").await;
+    assert!(h.text().lines().any(|l| l.contains("work/sub")), "{}", h.text());
+}
+
+#[tokio::test]
+async fn named_projects_are_edited_listed_opened_and_removed() {
+    let env = Env::new("proj-named", "");
+    let editor = env.dir.join("editor.sh");
+    write(
+        &editor,
+        &format!(
+            "#!/bin/sh\ncat > \"$1\" <<'EOF'\nroot: {}\nwindows:\n  - name: named\n    command: echo N$((3+3))\nEOF\n",
+            env.dir.display()
+        ),
+    );
+    std::fs::set_permissions(&editor, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let (ok, out) = env.run_with(&["project", "edit", "foo"], &[("EDITOR", editor.to_str().unwrap()), ("VISUAL", "")]);
+    assert!(ok, "{out}");
+    assert!(env.dir.join("projects/foo.yaml").is_file());
+    let (_, out) = env.run(&["project", "ls"]);
+    assert_eq!(out.trim(), "foo");
+
+    let mut h = env.client(&["open", "foo"], 100, 30);
+    h.wait_text("N6").await;
+    assert!(h.text().contains("1 named"), "{}", h.text());
+    drop(h);
+
+    let (ok, out) = env.run(&["project", "rm", "foo"]);
+    assert!(ok, "{out}");
+    let (_, out) = env.run(&["project", "ls"]);
+    assert_eq!(out.trim(), "");
+    let (ok, out) = env.run(&["open", "foo"]);
+    assert!(!ok && out.contains("no project"), "{out}");
 }

@@ -66,6 +66,9 @@ follow = true           # moving the selection in the focused sidebar shows that
 "d" = "detach"
 "a" = "send-prefix"           # <prefix> a sends a literal prefix key
 "r" = "reload-config"
+"R" = "respawn-pane"          # restart the pane the way it started (asks y/n)
+"M-r" = "respawn-window"      # restart the window from its project layout (asks y/n)
+# "E" = "export-project"      # write the session to its project file (see `dtm export`)
 
 # Keys that work without the prefix.
 [keys.root]
@@ -99,6 +102,7 @@ follow = true           # moving the selection in the focused sidebar shows that
 "J" = "sidebar-move-down"     # reorder windows / sessions
 "K" = "sidebar-move-up"
 "n" = "sidebar-new"
+"R" = "sidebar-respawn"      # asks y/n
 "Tab" = "toggle-sidebar-mode"
 "q" = "sidebar-leave"
 

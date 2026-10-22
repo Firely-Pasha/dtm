@@ -1,0 +1,21 @@
+# Save as project.dtm.yaml in your project, then run `dtm` (or `dtm open`) there.
+name: app                 # session name (default: the directory's name)
+# root: ~/code/app        # default: the directory of this file
+# lazy: true              # windows start when first shown (default)
+windows:
+  - name: edit
+    focus: true           # shown first (default: the first window)
+    layout:
+      split: columns      # columns = side by side, rows = stacked
+      panes:
+        - command: nvim
+          size: 65%
+          focus: true
+        - split: rows
+          panes:
+            - command: cargo watch -x check
+            - path: scripts   # relative to the window/root; ~ and absolute work too
+  - name: server
+    command: cargo run
+    lazy: false           # start at once instead of on first view
+  - name: shell

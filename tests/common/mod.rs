@@ -16,13 +16,24 @@ pub struct Harness {
 
 impl Harness {
     pub fn spawn(program: &str, args: &[&str], env: &[(&str, &str)], cols: u16, rows: u16) -> Harness {
+        Harness::spawn_in(program, args, env, cols, rows, None)
+    }
+
+    pub fn spawn_in(
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+        cols: u16,
+        rows: u16,
+        cwd: Option<&std::path::Path>,
+    ) -> Harness {
         let (tx, rx) = mpsc::unbounded_channel();
         let pty = Pty::spawn(
             SpawnOpts {
                 shell: program.to_string(),
                 args: args.iter().map(|s| s.to_string()).collect(),
                 env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-                cwd: None,
+                cwd: cwd.map(|p| p.to_path_buf()),
                 cols,
                 rows,
             },

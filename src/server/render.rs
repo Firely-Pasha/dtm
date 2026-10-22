@@ -158,7 +158,7 @@ mod tests {
         .unwrap();
         let mut screen = crate::term::screen::Screen::new(cols as usize, rows as usize, 100);
         screen.feed(text.as_bytes());
-        Pane { id, screen, pty, last_title: String::new(), copy: None }
+        Pane { id, spec: Default::default(), screen, pty, last_title: String::new(), copy: None }
     }
 
     fn window(root: Node, active: PaneId) -> Window {
@@ -172,6 +172,8 @@ mod tests {
             zoomed: false,
             activity: false,
             bell: false,
+            plan: None,
+            pending: false,
         }
     }
 

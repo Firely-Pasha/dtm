@@ -151,6 +151,15 @@ impl Pty {
         }
     }
 
+    /// Command line of the foreground job, or `None` while the shell itself is in front.
+    pub fn foreground_cmdline(&self) -> Option<String> {
+        let pg = self.foreground_pgrp().filter(|&pg| pg != self.pid as i32)?;
+        let raw = std::fs::read(format!("/proc/{pg}/cmdline")).ok()?;
+        let args: Vec<String> =
+            raw.split(|&b| b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        (!args.is_empty()).then(|| crate::project::quote_args(&args))
+    }
+
     /// Name of the foreground process.
     pub fn process_name(&self) -> Option<String> {
         let pg = self.foreground_pgrp().unwrap_or(self.pid as i32);

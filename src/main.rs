@@ -26,6 +26,23 @@ enum Cmd {
     },
     /// List sessions.
     Ls,
+    /// Open a project: ./project.dtm.yaml, a file, a directory, or a saved project.
+    Open {
+        project: Option<String>,
+    },
+    /// Manage saved projects.
+    Project {
+        #[command(subcommand)]
+        cmd: ProjectCmd,
+    },
+    /// Write a running session to a project file (default: the file it was opened from).
+    Export {
+        /// Target: a file, a directory, or the name of a saved project (created if new).
+        project: Option<String>,
+        /// Session to export (default: the one this pane belongs to).
+        #[arg(short = 't', long)]
+        session: Option<String>,
+    },
     /// Terminate the server and every session.
     KillServer,
     /// Re-read the configuration file.
@@ -60,6 +77,16 @@ enum Cmd {
     DebugRun,
 }
 
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// List saved projects.
+    Ls,
+    /// Edit a saved project in $VISUAL/$EDITOR (created from a template if new).
+    Edit { name: String },
+    /// Delete a saved project.
+    Rm { name: String },
+}
+
 fn init_logging() {
     let path = paths::log_path();
     let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else { return };
@@ -82,7 +109,29 @@ async fn run_server() -> Result<()> {
 
 async fn real_main(cli: Cli) -> Result<()> {
     match cli.command {
-        None => client::attach(AttachMode::Default, None).await,
+        None => {
+            let here = std::env::current_dir().unwrap_or_default();
+            if here.join(dtm::project::PROJECT_FILE).is_file() {
+                client::open_project(None).await
+            } else {
+                client::attach(AttachMode::Default, None).await
+            }
+        }
+        Some(Cmd::Open { project }) => client::open_project(project).await,
+        Some(Cmd::Project { cmd }) => match cmd {
+            ProjectCmd::Ls => {
+                for n in dtm::project::list_named(&paths::config_path()) {
+                    println!("{n}");
+                }
+                Ok(())
+            }
+            ProjectCmd::Edit { name } => client::project_edit(&name),
+            ProjectCmd::Rm { name } => client::project_rm(&name),
+        },
+        Some(Cmd::Export { project, session }) => {
+            println!("{}", client::export(project, session).await?.display());
+            Ok(())
+        }
         Some(Cmd::New { session }) => client::attach(AttachMode::New, session).await,
         Some(Cmd::Attach { target }) => client::attach(AttachMode::Existing, target).await,
         Some(Cmd::Ls) => {

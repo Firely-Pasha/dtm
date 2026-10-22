@@ -37,12 +37,13 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `(` / `)` | previous / next session | `b` | show / hide sidebar |
 | `s` | sidebar: windows ↔ sessions | `d` | detach |
 | `w` | focus the sidebar | `;` | previously focused pane |
-| `Ctrl-l` | send a literal Ctrl-l | | |
+| `Ctrl-l` | send a literal Ctrl-l | `[` or `PageUp` | copy mode |
+| `]` | paste | `a` | send a literal Ctrl-a |
+| `r` | reload config | `R` | respawn pane (asks) |
+| `Alt-r` | respawn window (asks) | | |
 
 Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
 (see below).
-| `[` or `PageUp` | copy mode | `]` | paste |
-| `a` | send a literal Ctrl-a | `r` | reload config |
 
 **Resizing**: `<prefix> h j k l` resizes by 5 cells, then plain `h j k l` keep
 resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
@@ -125,6 +126,64 @@ dtm select-pane [-t PANE] -L|-R|-U|-D|-l    # move focus (-l: previously focused
 dtm query [-t PANE] '#{window_zoomed_flag}'  # also pane_at_left/right/top/bottom, pane_id, pane_active
 ```
 
+## Projects
+
+A project file describes a session: its windows, how each window is split,
+where each pane starts and what it runs. See
+[`examples/project.dtm.yaml`](examples/project.dtm.yaml).
+
+```yaml
+name: app                 # session name (default: the directory's name)
+root: ~/code/app          # default: the directory of the file
+lazy: true                # default: a window starts when first shown
+windows:
+  - name: edit
+    focus: true           # shown first
+    layout:
+      split: columns      # columns = side by side, rows = stacked
+      panes:
+        - command: nvim
+          size: 65%       # N% or cells; the rest is shared equally
+          focus: true
+        - split: rows
+          panes:
+            - command: cargo watch -x check
+            - path: scripts
+  - name: server          # one pane: path/command straight on the window
+    command: cargo run
+    lazy: false
+```
+
+- A `path` is relative to the nearest `path` above it, then to `root`; `~` and
+  absolute paths work. A pane's `command` is typed into its shell, so you are
+  left at a prompt when it ends. Unknown keys and mistakes (a split with one
+  pane, a bad size) are reported with their position before anything starts.
+- **Lazy start.** Only the first window is created when the project opens; the
+  others get their panes and run their commands the first time you show them
+  (a `…` marks them in the sidebar). Set `lazy: false` on the file or on a
+  window to start it at once.
+- **Opening.** `dtm` in a directory with a `project.dtm.yaml` opens it.
+  `dtm open [FILE|DIR|NAME]` takes a file, a directory holding one, or a saved
+  project. If a session with the project's name is already running, dtm attaches
+  to it and starts nothing again.
+- **Saved projects** live in `~/.config/dtm/projects/NAME.yaml` (next to the
+  config file): `dtm project ls`, `dtm project edit NAME` (opens `$VISUAL` /
+  `$EDITOR`, creating the file from a template, and checks it afterwards) and
+  `dtm project rm NAME`. A saved project has no directory of its own, so give
+  it a `root:`.
+- **Export.** `dtm export [FILE|DIR|NAME] [-t SESSION]` writes a running session
+  as a project: the splits and their sizes, each pane's directory and, when a
+  program other than the shell is running, its command line. With no argument
+  it updates the file the session was opened from, or creates
+  `project.dtm.yaml` in the session's directory. Paths are written relative to
+  the file, and no `root` is written. When updating, your `name` and `lazy`
+  settings are kept, but comments are not. The `export-project` action (unbound
+  by default) does the same from a key.
+- **Respawn.** `<prefix> R` restarts the focused pane the way it started (same
+  directory and command, a new process) and `<prefix> Alt-r` restarts the whole
+  window from its project layout, closing panes you added since. Both ask first.
+  In the sidebar, `R` respawns the selected window.
+
 ## Sidebar
 
 A column on the left or right (`[sidebar] position`) lists the current
@@ -162,11 +221,11 @@ checked by the test suite to match the built-in defaults.
   `kill-pane`, `zoom-pane`, `new-session`, `next-session`, `prev-session`,
   `select-session N`, `rename-session`, `toggle-sidebar`,
   `toggle-sidebar-mode`, `copy-mode`, `paste-buffer`, `detach`, `send-prefix`,
-  `reload-config`, `focus-last`, `navigate-left|right|up|down`, `navigate-last`,
+  `reload-config`, `respawn-pane`, `respawn-window`, `export-project`, `focus-last`, `navigate-left|right|up|down`, `navigate-last`,
   `send-key` (sends the key that triggered the binding), and in copy mode `copy-up|down|left|right`,
   `copy-page-up|down`, `copy-half-page-up|down`, `copy-top|bottom`,
   `copy-line-start|end`, `copy-select`, `copy-select-line`, `copy-yank`,
-  `copy-cancel`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|leave`.
+  `copy-cancel`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|respawn|leave`.
 - A config error is reported by `dtm reload` / `<prefix> r` and the running
   configuration stays active.
 

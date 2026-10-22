@@ -22,6 +22,7 @@ pub enum SidebarCmd {
     MoveDown,
     MoveUp,
     New,
+    Respawn,
     Leave,
 }
 
@@ -88,6 +89,12 @@ pub enum Action {
     NavigateLast,
     /// Send the key that triggered this binding to the pane.
     SendKey,
+    /// Restart the focused pane the way it was started (asks first).
+    RespawnPane,
+    /// Restart the window from its project layout (asks first).
+    RespawnWindow,
+    /// Write the session to its project file.
+    ExportProject,
 }
 
 fn number<T: FromStr>(arg: Option<&str>, name: &str) -> Result<T, String> {
@@ -175,6 +182,10 @@ impl FromStr for Action {
             "navigate-down" => no_arg(Action::Navigate(Dir::Down)),
             "navigate-last" => no_arg(Action::NavigateLast),
             "send-key" => no_arg(Action::SendKey),
+            "respawn-pane" => no_arg(Action::RespawnPane),
+            "respawn-window" => no_arg(Action::RespawnWindow),
+            "export-project" => no_arg(Action::ExportProject),
+            "sidebar-respawn" => no_arg(Action::Sidebar(SidebarCmd::Respawn)),
             "sidebar-down" => no_arg(Action::Sidebar(SidebarCmd::Down)),
             "sidebar-up" => no_arg(Action::Sidebar(SidebarCmd::Up)),
             "sidebar-open" => no_arg(Action::Sidebar(SidebarCmd::Open)),
@@ -212,6 +223,10 @@ mod tests {
         assert_eq!("navigate-last".parse(), Ok(Action::NavigateLast));
         assert_eq!("focus-last".parse(), Ok(Action::FocusLast));
         assert_eq!("send-key".parse(), Ok(Action::SendKey));
+        assert_eq!("respawn-pane".parse(), Ok(Action::RespawnPane));
+        assert_eq!("respawn-window".parse(), Ok(Action::RespawnWindow));
+        assert_eq!("export-project".parse(), Ok(Action::ExportProject));
+        assert_eq!("sidebar-respawn".parse(), Ok(Action::Sidebar(SidebarCmd::Respawn)));
         assert_eq!("sidebar-move-up".parse(), Ok(Action::Sidebar(SidebarCmd::MoveUp)));
     }
 

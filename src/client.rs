@@ -12,7 +12,8 @@ use tokio::net::UnixStream;
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::config::Config;
-use crate::protocol::{decode, encode, framed, AttachMode, ClientMsg, Conn, PaneDir, ServerMsg, SessionInfo};
+use crate::project::{self, Plan};
+use crate::protocol::{decode, encode, framed, AttachMode, ClientMsg, Conn, PaneDir, ServerMsg, SessionInfo, Snapshot};
 use crate::{paths, tty};
 
 /// Enter the alternate screen and disable autowrap (the server relies on it).
@@ -116,6 +117,95 @@ pub async fn query(target: Option<u32>, format: String) -> Result<String> {
     }
 }
 
+async fn snapshot(session: Option<String>) -> Result<Snapshot> {
+    let pane = std::env::var("DTM_PANE").ok().and_then(|v| v.parse().ok());
+    match request(ClientMsg::Snapshot { session, pane }).await? {
+        ServerMsg::Snapshot(s) => Ok(s),
+        ServerMsg::Error(e) => bail!(e),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// `dtm export`: write a running session to a project file. Returns the path written.
+pub async fn export(arg: Option<String>, session: Option<String>) -> Result<std::path::PathBuf> {
+    let snap = snapshot(session).await?;
+    let cfg = paths::config_path();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let target = match arg {
+        Some(a) => project::find(Some(&a), &cwd, &cfg).or_else(|e| {
+            // An unknown name creates a new named project.
+            if a.contains('/') || a.ends_with(".yaml") || a.ends_with(".yml") {
+                Ok(cwd.join(&a))
+            } else if project::valid_project_name(&a) && !cwd.join(&a).exists() {
+                Ok(project::named_path(&cfg, &a))
+            } else {
+                Err(e)
+            }
+        }),
+        None => match snap.source {
+            Some(p) => Ok(p),
+            None if snap.plan.root.as_os_str().is_empty() => Err("session has no directory: name a target".to_string()),
+            None => Ok(snap.plan.root.join(project::PROJECT_FILE)),
+        },
+    }
+    .map_err(|e| anyhow!(e))?;
+    let existed = target.exists();
+    project::export_to(&snap.plan, &target, &project::home_dir()).map_err(|e| anyhow!(e))?;
+    if existed {
+        eprintln!("dtm: updated {} (comments in it were not kept)", target.display());
+    }
+    Ok(target)
+}
+
+fn project_editor_command(path: &std::path::Path) -> std::process::Command {
+    let editor = ["VISUAL", "EDITOR"]
+        .iter()
+        .find_map(|v| std::env::var(v).ok().filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| "vi".into());
+    let mut c = std::process::Command::new("sh");
+    c.arg("-c").arg(format!("{editor} \"$1\"")).arg("dtm-edit").arg(path);
+    c
+}
+
+/// `dtm project edit NAME`: edit a named project, creating it from a template.
+pub fn project_edit(name: &str) -> Result<()> {
+    if !project::valid_project_name(name) {
+        bail!("bad project name: {name:?}");
+    }
+    let path = project::named_path(&paths::config_path(), name);
+    if !path.exists() {
+        std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")))?;
+        let cwd = std::env::current_dir().unwrap_or_default();
+        std::fs::write(&path, project::template(&cwd))?;
+    }
+    loop {
+        let status = project_editor_command(&path).status().context("starting the editor")?;
+        if !status.success() {
+            bail!("editor failed");
+        }
+        match project::load(&path) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                eprintln!("dtm: {e}");
+                eprint!("[e]dit again / [k]eep: ");
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                if line.trim().eq_ignore_ascii_case("k") {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+pub fn project_rm(name: &str) -> Result<()> {
+    let path = project::named_path(&paths::config_path(), name);
+    if !project::valid_project_name(name) || !path.is_file() {
+        bail!("no project {name:?}");
+    }
+    Ok(std::fs::remove_file(path)?)
+}
+
 enum Ending {
     Detached,
     Exited,
@@ -124,14 +214,26 @@ enum Ending {
 
 /// Attach to a session and relay until detached. Never returns on success.
 pub async fn attach(mode: AttachMode, name: Option<String>) -> Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    attach_with(mode != AttachMode::Existing, move |cols, rows| ClientMsg::Attach { mode, name, cols, rows, cwd }).await
+}
+
+/// Open a project (see `project::find` for what `arg` may be) and attach to its session.
+pub async fn open_project(arg: Option<String>) -> Result<()> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let source = project::find(arg.as_deref(), &cwd, &paths::config_path()).map_err(|e| anyhow!(e))?;
+    let plan: Plan = project::load_plan(&source).map_err(|e| anyhow!(e))?;
+    attach_with(true, move |cols, rows| ClientMsg::OpenProject { plan, source, cols, rows }).await
+}
+
+async fn attach_with(start_server: bool, first: impl FnOnce(u16, u16) -> ClientMsg) -> Result<()> {
     if !std::io::stdin().is_terminal() {
         bail!("dtm needs a terminal (stdin is not a tty)");
     }
-    let conn = connect(mode != AttachMode::Existing).await?;
+    let conn = connect(start_server).await?;
     let (mut sink, mut stream) = conn.split();
     let (cols, rows) = tty::size();
-    let cwd = std::env::current_dir().unwrap_or_default();
-    sink.send(encode(&ClientMsg::Attach { mode, name, cols, rows, cwd })).await?;
+    sink.send(encode(&first(cols, rows))).await?;
 
     let raw = tty::RawMode::enable()?;
     let mut entered = false;

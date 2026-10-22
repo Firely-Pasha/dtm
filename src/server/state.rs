@@ -5,6 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::layout::{Node, PaneId, Rect};
 use crate::config::SidebarMode;
+use crate::project::PlanNode;
 use crate::protocol::ServerMsg;
 use crate::pty::Pty;
 use crate::term::canvas::Canvas;
@@ -14,8 +15,17 @@ pub type WindowId = u32;
 pub type SessionId = u32;
 pub type ClientId = u32;
 
+/// How a pane was started, so it can be started again.
+#[derive(Clone, Debug, Default)]
+pub struct PaneSpec {
+    pub cwd: Option<PathBuf>,
+    /// Typed into the shell after it starts.
+    pub command: Option<String>,
+}
+
 pub struct Pane {
     pub id: PaneId,
+    pub spec: PaneSpec,
     pub screen: Screen,
     pub pty: Pty,
     pub last_title: String,
@@ -47,6 +57,10 @@ pub struct Window {
     pub zoomed: bool,
     pub activity: bool,
     pub bell: bool,
+    /// The project layout this window came from (kept for respawn and export).
+    pub plan: Option<PlanNode>,
+    /// A project window that has no panes yet: it starts when first shown.
+    pub pending: bool,
 }
 
 impl Window {
@@ -82,6 +96,8 @@ pub struct Session {
     pub size: (u16, u16),
     pub owner: Option<ClientId>,
     pub cwd: PathBuf,
+    /// The project file this session was opened from.
+    pub project: Option<PathBuf>,
 }
 
 impl Session {
@@ -100,12 +116,20 @@ pub enum PromptKind {
     RenameSession(SessionId),
     ConfirmKillWindow(WindowId),
     ConfirmKillSession(SessionId),
+    ConfirmRespawnPane(PaneId),
+    ConfirmRespawnWindow(WindowId),
 }
 
 impl PromptKind {
     /// Confirmation prompts take a single y/n key instead of text.
     pub fn is_confirm(&self) -> bool {
-        matches!(self, PromptKind::ConfirmKillWindow(_) | PromptKind::ConfirmKillSession(_))
+        matches!(
+            self,
+            PromptKind::ConfirmKillWindow(_)
+                | PromptKind::ConfirmKillSession(_)
+                | PromptKind::ConfirmRespawnPane(_)
+                | PromptKind::ConfirmRespawnWindow(_)
+        )
     }
 }
 
@@ -179,6 +203,8 @@ mod tests {
             zoomed: false,
             activity: false,
             bell: false,
+            plan: None,
+            pending: false,
         }
     }
 
