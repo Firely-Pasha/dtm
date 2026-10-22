@@ -77,17 +77,43 @@ editor is recognised by process name: `vim`, `nvim`, `view`, `vimdiff`, `fzf`
 
 ### Neovim plugin
 
-[contrib/nvim](contrib/nvim) is a small Lua plugin with the same mappings, commands
-and options as vim-tmux-navigator, talking to dtm instead of tmux
-(vim-tmux-navigator itself only works with tmux). With lazy.nvim:
+This repository is also the Neovim plugin: `plugin/` and `lua/dtm_navigator/` at the
+root provide the same mappings, commands and options as vim-tmux-navigator, talking
+to dtm instead of tmux (vim-tmux-navigator itself only works with tmux). With
+lazy.nvim:
 
 ```lua
-{ dir = "/path/to/dtm/contrib/nvim", name = "dtm-navigator" }
+{ "Firely-Pasha/dtm", name = "dtm-navigator" }
 ```
 
-or add it to the runtimepath: `set rtp+=/path/to/dtm/contrib/nvim`. See
-[contrib/nvim/README.md](contrib/nvim/README.md) for the options. It does nothing
-special outside dtm. Classic Vim is not supported (the plugin is Lua).
+Outside dtm (no `$DTM_PANE`) it only moves between Neovim windows. If you also use
+tmux, load it only inside dtm, and vim-tmux-navigator elsewhere, since both map the
+same keys:
+
+```lua
+local in_dtm = (vim.env.DTM_PANE or "") ~= ""
+return {
+  { "christoomey/vim-tmux-navigator", cond = not in_dtm },
+  { "Firely-Pasha/dtm", name = "dtm-navigator", cond = in_dtm },
+}
+```
+
+Without a plugin manager, clone the repository and `set rtp+=/path/to/dtm`.
+Neovim only (classic Vim is not supported). It uses APIs available since Neovim 0.7
+and is tested with 0.12.
+
+Commands: `:DtmNavigateLeft`, `:DtmNavigateDown`, `:DtmNavigateUp`,
+`:DtmNavigateRight`, `:DtmNavigatePrevious` (mapped to `<C-h/j/k/l>` and `<C-\>`).
+Options, set before or after loading (`no_mappings` must be set first):
+
+| Variable | Default | |
+|---|---|---|
+| `g:dtm_navigator_no_mappings` | 0 | don't define the default mappings (use the commands) |
+| `g:dtm_navigator_save_on_switch` | 0 | 1: `:update` the buffer, 2: `:wall`, before leaving for another pane |
+| `g:dtm_navigator_disable_when_zoomed` | 0 | stay in Neovim when the dtm window is zoomed |
+| `g:dtm_navigator_disable_netrw_workaround` | 0 | don't make `<C-l>` work in netrw |
+
+`require("dtm_navigator").setup({ save_on_switch = 1 })` sets them from Lua.
 
 ### What dtm exports to panes
 
@@ -171,7 +197,7 @@ dtm (client) ──unix socket, length-prefixed bincode──► dtm server
 src/term/     parser.rs (VT500 state machine), screen.rs (emulator), canvas.rs (frame + differ)
 src/server/   layout.rs, render.rs, sidebar.rs, copy.rs, mouse.rs, input.rs, actions.rs
 src/          keys.rs, action.rs, config.rs, protocol.rs, pty.rs, client.rs, procinfo.rs
-contrib/nvim/ Neovim plugin for Ctrl-h/j/k/l navigation
+plugin/, lua/   Neovim plugin for Ctrl-h/j/k/l navigation
 ```
 
 ## Tests

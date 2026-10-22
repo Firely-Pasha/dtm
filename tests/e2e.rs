@@ -832,7 +832,7 @@ fn has_nvim() -> bool {
     Command::new("nvim").arg("--version").output().is_ok()
 }
 
-const PLUGIN_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/nvim");
+const PLUGIN_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 #[tokio::test]
 async fn neovim_plugin_hands_over_at_its_edge() {

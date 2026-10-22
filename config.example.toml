@@ -70,7 +70,7 @@ follow = true           # moving the selection in the focused sidebar shows that
 # Keys that work without the prefix.
 [keys.root]
 # navigate-* moves between panes and on into the sidebar; when an editor such
-# as Neovim is in the foreground it gets the key instead (see contrib/nvim).
+# as Neovim is in the foreground it gets the key instead (see "Neovim plugin" in the README).
 "C-h" = "navigate-left"
 "C-j" = "navigate-down"
 "C-k" = "navigate-up"
