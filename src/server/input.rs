@@ -1,6 +1,6 @@
 //! Client input: key decoding, prefix handling, key tables, and prompts.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::state::ClientId;
 use super::{Event, Server};
@@ -56,12 +56,32 @@ impl Server {
             }
             return;
         }
+        // For a short while after a resize, plain h/j/k/l keep resizing.
+        if c.sidebar_focus.is_none()
+            && let Some(until) = c.resize_until {
+                if Instant::now() < until
+                    && let Some(action) = self.cfg.resize_keys.get(&ev.combo()).cloned() {
+                        self.run_action(cid, action, None);
+                        return;
+                    }
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.resize_until = None;
+                }
+            }
+        let Some(c) = self.clients.get_mut(&cid) else { return };
         if ev.combo() == self.cfg.prefix {
             c.prefix = Some(ev.raw);
             return;
         }
         if let Some(action) = self.cfg.root_keys.get(&ev.combo()).cloned() {
             self.run_action(cid, action, None);
+            return;
+        }
+        if self.clients.get(&cid).is_some_and(|c| c.sidebar_focus.is_some()) {
+            // The focused sidebar swallows keys it has no binding for.
+            if let Some(action) = self.cfg.sidebar_keys.get(&ev.combo()).cloned() {
+                self.run_action(cid, action, None);
+            }
             return;
         }
         if self.active_pane_in_copy_mode(cid) {
@@ -91,6 +111,18 @@ impl Server {
     fn prompt_key(&mut self, cid: ClientId, ev: KeyEvent) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let Some(p) = c.prompt.as_mut() else { return };
+        if p.kind.is_confirm() {
+            if matches!(ev.key, Key::Mouse(_)) {
+                return;
+            }
+            let yes = matches!(ev.key, Key::Char('y' | 'Y'));
+            let p = c.prompt.take().unwrap();
+            if yes {
+                self.commit_prompt(cid, p.kind, p.text);
+            }
+            self.mark_dirty();
+            return;
+        }
         match ev.key {
             Key::Enter => {
                 let p = c.prompt.take().unwrap();

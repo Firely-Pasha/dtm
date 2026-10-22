@@ -10,6 +10,21 @@ pub enum Dir {
     Down,
 }
 
+/// Commands available while the sidebar has focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidebarCmd {
+    Down,
+    Up,
+    /// Switch to the selected window or session and leave the sidebar.
+    Open,
+    Kill,
+    Rename,
+    MoveDown,
+    MoveUp,
+    New,
+    Leave,
+}
+
 /// Movement and editing commands available in copy mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyCmd {
@@ -27,6 +42,8 @@ pub enum CopyCmd {
     LineEnd,
     /// Start (or clear) the selection.
     Select,
+    /// Select whole lines (switches an existing selection to line mode).
+    SelectLine,
     /// Copy the selection (or current line) and leave copy mode.
     Yank,
     Cancel,
@@ -61,6 +78,8 @@ pub enum Action {
     CopyMode,
     Copy(CopyCmd),
     PasteBuffer,
+    FocusSidebar,
+    Sidebar(SidebarCmd),
 }
 
 fn number<T: FromStr>(arg: Option<&str>, name: &str) -> Result<T, String> {
@@ -139,6 +158,17 @@ impl FromStr for Action {
             "copy-line-start" => no_arg(Action::Copy(CopyCmd::LineStart)),
             "copy-line-end" => no_arg(Action::Copy(CopyCmd::LineEnd)),
             "copy-select" => no_arg(Action::Copy(CopyCmd::Select)),
+            "copy-select-line" => no_arg(Action::Copy(CopyCmd::SelectLine)),
+            "focus-sidebar" => no_arg(Action::FocusSidebar),
+            "sidebar-down" => no_arg(Action::Sidebar(SidebarCmd::Down)),
+            "sidebar-up" => no_arg(Action::Sidebar(SidebarCmd::Up)),
+            "sidebar-open" => no_arg(Action::Sidebar(SidebarCmd::Open)),
+            "sidebar-kill" => no_arg(Action::Sidebar(SidebarCmd::Kill)),
+            "sidebar-rename" => no_arg(Action::Sidebar(SidebarCmd::Rename)),
+            "sidebar-move-down" => no_arg(Action::Sidebar(SidebarCmd::MoveDown)),
+            "sidebar-move-up" => no_arg(Action::Sidebar(SidebarCmd::MoveUp)),
+            "sidebar-new" => no_arg(Action::Sidebar(SidebarCmd::New)),
+            "sidebar-leave" => no_arg(Action::Sidebar(SidebarCmd::Leave)),
             "copy-yank" => no_arg(Action::Copy(CopyCmd::Yank)),
             "copy-cancel" => no_arg(Action::Copy(CopyCmd::Cancel)),
             _ => Err(format!("unknown action {name:?}")),
@@ -160,6 +190,9 @@ mod tests {
         assert_eq!("copy-mode".parse(), Ok(Action::CopyMode));
         assert_eq!("copy-half-page-up".parse(), Ok(Action::Copy(CopyCmd::HalfPageUp)));
         assert_eq!("paste-buffer".parse(), Ok(Action::PasteBuffer));
+        assert_eq!("copy-select-line".parse(), Ok(Action::Copy(CopyCmd::SelectLine)));
+        assert_eq!("focus-sidebar".parse(), Ok(Action::FocusSidebar));
+        assert_eq!("sidebar-move-up".parse(), Ok(Action::Sidebar(SidebarCmd::MoveUp)));
     }
 
     #[test]

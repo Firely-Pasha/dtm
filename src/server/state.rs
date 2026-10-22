@@ -86,13 +86,23 @@ impl Session {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptKind {
-    RenameWindow,
-    RenameSession,
+    RenameWindow(WindowId),
+    RenameSession(SessionId),
+    ConfirmKillWindow(WindowId),
+    ConfirmKillSession(SessionId),
+}
+
+impl PromptKind {
+    /// Confirmation prompts take a single y/n key instead of text.
+    pub fn is_confirm(&self) -> bool {
+        matches!(self, PromptKind::ConfirmKillWindow(_) | PromptKind::ConfirmKillSession(_))
+    }
 }
 
 pub struct Prompt {
     pub kind: PromptKind,
     pub text: String,
+    pub label: String,
 }
 
 pub struct Client {
@@ -108,6 +118,10 @@ pub struct Client {
     /// Raw bytes of the prefix key while waiting for the follow-up key.
     pub prefix: Option<Vec<u8>>,
     pub prompt: Option<Prompt>,
+    /// Selected row while the sidebar has keyboard focus.
+    pub sidebar_focus: Option<usize>,
+    /// Plain resize keys are accepted until this moment.
+    pub resize_until: Option<Instant>,
     pub prev: Option<Canvas>,
     pub last_active: Instant,
     pub message: Option<(String, Instant)>,
@@ -127,6 +141,8 @@ impl Client {
             flush_scheduled: false,
             prefix: None,
             prompt: None,
+            sidebar_focus: None,
+            resize_until: None,
             prev: None,
             last_active: Instant::now(),
             message: None,

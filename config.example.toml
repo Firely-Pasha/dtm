@@ -4,11 +4,16 @@
 
 [options]
 prefix = "C-a"          # key that starts a command (C-a, C-b, M-x, F1, ...)
-# shell = "/bin/bash"   # default: $SHELL
+# Program started in every new pane. Default: $SHELL, falling back to /bin/sh.
+# Use the full path of a shell that exists on your machine, e.g. "/bin/zsh" or
+# "/usr/bin/fish". Panes that are already open keep their shell.
+# shell = "/bin/bash"
 history_limit = 10000   # scrollback lines kept per pane
 mouse = true            # sidebar clicks, pane focus, wheel scrolling
                         # (hold Shift to select text with the terminal itself)
 clipboard = true        # copy-mode yanks also go to the terminal clipboard (OSC 52)
+repeat_time = 1000      # ms after a resize during which plain h/j/k/l (see [keys.resize])
+                        # keep resizing, so you don't need the prefix every time; 0 = off
 
 [sidebar]
 position = "left"       # left | right
@@ -46,6 +51,7 @@ default_mode = "windows"  # windows | sessions
 "[" = "copy-mode"
 "PageUp" = "copy-mode"
 "]" = "paste-buffer"
+"w" = "focus-sidebar"         # also: focus-left from the leftmost pane reaches a left sidebar
 "d" = "detach"
 "a" = "send-prefix"           # <prefix> a sends a literal prefix key
 "r" = "reload-config"
@@ -55,6 +61,33 @@ default_mode = "windows"  # windows | sessions
 # "M-n" = "next-window"
 # "M-p" = "prev-window"
 # "M-1" = "select-window 1"
+# Ctrl-h/j/k/l to move between panes and into/out of the sidebar:
+# "C-h" = "focus-left"
+# "C-j" = "focus-down"
+# "C-k" = "focus-up"
+# "C-l" = "focus-right"
+
+# Keys accepted without the prefix for `repeat_time` after a resize.
+[keys.resize]
+"h" = "resize-left 1"
+"j" = "resize-down 1"
+"k" = "resize-up 1"
+"l" = "resize-right 1"
+
+# Keys while the sidebar has focus (<prefix> w, or focus towards it).
+# Moving back towards the panes (l/Right for a left sidebar, h/Left for a
+# right one) leaves it.
+[keys.sidebar]
+"j" = "sidebar-down"
+"k" = "sidebar-up"
+"Enter" = "sidebar-open"      # switch to the selected window/session
+"x" = "sidebar-kill"          # asks y/n
+"r" = "sidebar-rename"
+"J" = "sidebar-move-down"     # reorder windows / sessions
+"K" = "sidebar-move-up"
+"n" = "sidebar-new"
+"Tab" = "toggle-sidebar-mode"
+"q" = "sidebar-leave"
 
 # Keys while in copy mode.
 [keys.copy]
@@ -71,6 +104,7 @@ default_mode = "windows"  # windows | sessions
 "0" = "copy-line-start"
 "$" = "copy-line-end"
 "v" = "copy-select"           # start/clear selection
+"V" = "copy-select-line"      # select whole lines
 "y" = "copy-yank"             # copy selection (or current line) and leave
 "q" = "copy-cancel"
 "Escape" = "copy-cancel"

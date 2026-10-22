@@ -39,10 +39,14 @@ pub struct Config {
     pub mouse: bool,
     /// Send copied text to the terminal clipboard with OSC 52.
     pub clipboard: bool,
+    /// How long (ms) after a resize the plain resize keys keep working; 0 disables.
+    pub repeat_time: u64,
     pub sidebar: SidebarCfg,
     pub prefix_keys: HashMap<KeyCombo, Action>,
     pub root_keys: HashMap<KeyCombo, Action>,
     pub copy_keys: HashMap<KeyCombo, Action>,
+    pub resize_keys: HashMap<KeyCombo, Action>,
+    pub sidebar_keys: HashMap<KeyCombo, Action>,
 }
 
 #[derive(Deserialize, Default)]
@@ -61,6 +65,7 @@ struct RawOptions {
     history_limit: Option<usize>,
     mouse: Option<bool>,
     clipboard: Option<bool>,
+    repeat_time: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -78,6 +83,8 @@ struct RawKeys {
     prefix: BTreeMap<String, String>,
     root: BTreeMap<String, String>,
     copy: BTreeMap<String, String>,
+    resize: BTreeMap<String, String>,
+    sidebar: BTreeMap<String, String>,
 }
 
 const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
@@ -124,7 +131,50 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("[", "copy-mode"),
     ("PageUp", "copy-mode"),
     ("]", "paste-buffer"),
+    ("w", "focus-sidebar"),
 ];
+
+const DEFAULT_RESIZE_KEYS: &[(&str, &str)] = &[
+    ("h", "resize-left 1"),
+    ("Left", "resize-left 1"),
+    ("j", "resize-down 1"),
+    ("Down", "resize-down 1"),
+    ("k", "resize-up 1"),
+    ("Up", "resize-up 1"),
+    ("l", "resize-right 1"),
+    ("Right", "resize-right 1"),
+];
+
+const DEFAULT_SIDEBAR_KEYS: &[(&str, &str)] = &[
+    ("j", "sidebar-down"),
+    ("Down", "sidebar-down"),
+    ("k", "sidebar-up"),
+    ("Up", "sidebar-up"),
+    ("Enter", "sidebar-open"),
+    ("Space", "sidebar-open"),
+    ("x", "sidebar-kill"),
+    ("r", "sidebar-rename"),
+    (",", "sidebar-rename"),
+    ("J", "sidebar-move-down"),
+    ("K", "sidebar-move-up"),
+    ("n", "sidebar-new"),
+    ("Tab", "toggle-sidebar-mode"),
+    ("q", "sidebar-leave"),
+    ("Escape", "sidebar-leave"),
+];
+
+/// Sidebar defaults, plus the keys that step back towards the panes.
+fn default_sidebar_keys(position: Position) -> HashMap<KeyCombo, Action> {
+    let mut t = default_table(DEFAULT_SIDEBAR_KEYS);
+    let back: &[&str] = match position {
+        Position::Left => &["l", "Right"],
+        Position::Right => &["h", "Left"],
+    };
+    for k in back {
+        t.insert(parse_key(k).expect("default key"), Action::Sidebar(crate::action::SidebarCmd::Leave));
+    }
+    t
+}
 
 const DEFAULT_COPY_KEYS: &[(&str, &str)] = &[
     ("k", "copy-up"),
@@ -148,6 +198,7 @@ const DEFAULT_COPY_KEYS: &[(&str, &str)] = &[
     ("0", "copy-line-start"),
     ("$", "copy-line-end"),
     ("v", "copy-select"),
+    ("V", "copy-select-line"),
     ("Space", "copy-select"),
     ("y", "copy-yank"),
     ("Enter", "copy-yank"),
@@ -170,6 +221,7 @@ impl Default for Config {
             history_limit: 10_000,
             mouse: true,
             clipboard: true,
+            repeat_time: 1000,
             sidebar: SidebarCfg {
                 position: Position::Left,
                 width: 24,
@@ -179,6 +231,8 @@ impl Default for Config {
             prefix_keys: default_table(DEFAULT_PREFIX_KEYS),
             root_keys: HashMap::new(),
             copy_keys: default_table(DEFAULT_COPY_KEYS),
+            resize_keys: default_table(DEFAULT_RESIZE_KEYS),
+            sidebar_keys: default_sidebar_keys(Position::Left),
         }
     }
 }
@@ -219,9 +273,13 @@ impl Config {
         if let Some(c) = raw.options.clipboard {
             cfg.clipboard = c;
         }
+        if let Some(t) = raw.options.repeat_time {
+            cfg.repeat_time = t;
+        }
         let sb = &mut cfg.sidebar;
         if let Some(v) = raw.sidebar.position {
             sb.position = v;
+            cfg.sidebar_keys = default_sidebar_keys(v);
         }
         if let Some(v) = raw.sidebar.width {
             if !(4..=200).contains(&v) {
@@ -238,6 +296,8 @@ impl Config {
         apply_table(&mut cfg.prefix_keys, &raw.keys.prefix, "prefix")?;
         apply_table(&mut cfg.root_keys, &raw.keys.root, "root")?;
         apply_table(&mut cfg.copy_keys, &raw.keys.copy, "copy")?;
+        apply_table(&mut cfg.resize_keys, &raw.keys.resize, "resize")?;
+        apply_table(&mut cfg.sidebar_keys, &raw.keys.sidebar, "sidebar")?;
         Ok(cfg)
     }
 
@@ -254,7 +314,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::{CopyCmd, Dir};
+    use crate::action::{CopyCmd, Dir, SidebarCmd};
     use crate::keys::{Key, ALT};
 
     #[test]
@@ -330,6 +390,43 @@ mod tests {
         assert!(Config::from_toml("[sidebar]\nwidth = 1").is_err());
         assert!(Config::from_toml("[unknown]\nx = 1").is_err());
         assert!(Config::from_toml("this is not toml").is_err());
+    }
+
+    #[test]
+    fn repeat_time_resize_and_sidebar_tables() {
+        let d = Config::default();
+        assert_eq!(d.repeat_time, 1000);
+        assert_eq!(d.resize_keys[&(Key::Char('h'), 0)], Action::Resize(Dir::Left, 1));
+        assert_eq!(d.prefix_keys[&(Key::Char('w'), 0)], Action::FocusSidebar);
+        assert_eq!(d.sidebar_keys[&(Key::Char('x'), 0)], Action::Sidebar(SidebarCmd::Kill));
+        assert_eq!(d.copy_keys[&(Key::Char('V'), 0)], Action::Copy(CopyCmd::SelectLine));
+        // stepping back towards the panes depends on the sidebar side
+        assert_eq!(d.sidebar_keys[&(Key::Char('l'), 0)], Action::Sidebar(SidebarCmd::Leave));
+        assert!(!d.sidebar_keys.contains_key(&(Key::Char('h'), 0)));
+
+        let c = Config::from_toml(
+            r#"
+            [options]
+            repeat_time = 250
+            [sidebar]
+            position = "right"
+            [keys.resize]
+            "a" = "resize-left 3"
+            "h" = "none"
+            [keys.sidebar]
+            "d" = "sidebar-kill"
+            "x" = "none"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.repeat_time, 250);
+        assert_eq!(c.resize_keys[&(Key::Char('a'), 0)], Action::Resize(Dir::Left, 3));
+        assert!(!c.resize_keys.contains_key(&(Key::Char('h'), 0)));
+        assert_eq!(c.sidebar_keys[&(Key::Char('d'), 0)], Action::Sidebar(SidebarCmd::Kill));
+        assert!(!c.sidebar_keys.contains_key(&(Key::Char('x'), 0)));
+        assert_eq!(c.sidebar_keys[&(Key::Char('h'), 0)], Action::Sidebar(SidebarCmd::Leave));
+        assert!(!c.sidebar_keys.contains_key(&(Key::Char('l'), 0)));
+        assert!(Config::from_toml("[keys.sidebar]\n\"x\" = \"bogus\"").is_err());
     }
 
     #[test]

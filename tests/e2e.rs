@@ -439,3 +439,219 @@ async fn mouse_can_be_disabled() {
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
+
+async fn rename_window(h: &mut Harness, new: &str, old_len: usize) {
+    h.send(&format!("{CTRL_A},"));
+    h.wait_text("rename window").await;
+    h.send(&"\x7f".repeat(old_len));
+    h.send(&format!("{new}\r"));
+    h.wait_for("prompt closed", |t| !t.contains("rename window")).await;
+}
+
+#[tokio::test]
+async fn prompts_span_the_whole_bottom_row() {
+    let env = Env::new("promptbar", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A},"));
+    h.wait_text("rename window: sh").await;
+    let row = h.screen.row_text(29);
+    assert!(row.starts_with(" rename window: sh"), "{row:?}");
+    // the bar covers the sidebar column and the pane area, edge to edge
+    for x in [0, 10, 23, 24, 60, 99] {
+        assert!(h.screen.cell(x, 29).attrs.has(dtm::term::cell::flags::REVERSE), "column {x}");
+    }
+    assert_eq!(h.screen.cursor_pos().1, 29);
+    h.send("\x1b");
+    h.wait_for("closed", |t| !t.contains("rename window")).await;
+    // with the sidebar hidden it is the same bar
+    h.send(&format!("{CTRL_A}b{CTRL_A},"));
+    h.wait_text("rename window").await;
+    assert!(h.screen.row_text(29).starts_with(" rename window"));
+    h.send("\x1b");
+    h.wait_for("closed again", |t| !t.contains("rename window")).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn plain_keys_keep_resizing_for_a_moment() {
+    let env = Env::new("repeat", "[options]\nrepeat_time = 400\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send("stty size\r");
+    h.wait_for("initial size", |t| last_size(t, 30).is_some()).await;
+    let start = last_size(&h.text(), 30).unwrap();
+
+    // prefix + H once, then plain h h (1 cell each): 5 + 1 + 1 cells wider
+    h.send(&format!("{CTRL_A}Hhh"));
+    h.send("stty size\r");
+    h.wait_for("wider", |t| last_size(t, 30).is_some_and(|c| c >= start + 6)).await;
+    let wide = last_size(&h.text(), 30).unwrap();
+    assert!(wide <= start + 8, "{wide} vs {start}");
+
+    // a non-resize key ends the repeat; and after the time has passed h is plain input
+    h.send(&format!("{CTRL_A}H"));
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    h.send("hello\r");
+    h.wait_text("hello: not found").await;
+    h.send("stty size\r");
+    h.wait_for("size after expiry", |t| last_size(t, 30).is_some_and(|c| c > wide)).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn repeat_can_be_disabled() {
+    let env = Env::new("norepeat", "[options]\nrepeat_time = 0\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|{CTRL_A}Hhello\r"));
+    h.wait_text("hello: not found").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn shift_v_selects_whole_lines() {
+    let env = Env::new("vline", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("seq 1 100\r");
+    h.wait_text("100").await;
+    h.send(&format!("{CTRL_A}[g"));
+    h.wait_text("[copy").await;
+    // the first two history lines are "$ seq 1 100" and "1"
+    h.send("lllVjy");
+    h.wait_text("copied 13 characters").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+const SIDEBAR_HINT: &str = "j/k ⏎ x r J/K n q";
+
+#[tokio::test]
+async fn sidebar_takes_focus_from_the_panes() {
+    let env = Env::new("sbfocus", "[keys.root]\n\"C-h\" = \"focus-left\"\n\"C-l\" = \"focus-right\"\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+
+    // directional focus with nothing to the left goes into the sidebar...
+    h.send("\x08");
+    h.wait_text(SIDEBAR_HINT).await;
+    assert_eq!(h.screen.cell(0, 2).ch, '›');
+    // ...and the opposite direction returns to the pane
+    h.send("\x0c");
+    h.wait_for("left sidebar", |t| !t.contains(SIDEBAR_HINT)).await;
+
+    // the prefix keys do the same
+    h.send(&format!("{CTRL_A}h"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send(&format!("{CTRL_A}l"));
+    h.wait_for("back in the pane", |t| !t.contains(SIDEBAR_HINT)).await;
+
+    // with two panes, focus-left from the right one reaches the left pane first
+    h.send(&format!("{CTRL_A}|"));
+    h.send(&format!("{CTRL_A}h"));
+    h.send("echo left$((2+3))\r");
+    h.wait_text("left5").await;
+    assert!(!h.text().contains(SIDEBAR_HINT));
+    h.send(&format!("{CTRL_A}h"));
+    h.wait_text(SIDEBAR_HINT).await;
+    // keys the sidebar does not know are swallowed instead of reaching the shell
+    h.send("z");
+    h.send("q");
+    h.wait_for("left", |t| !t.contains(SIDEBAR_HINT)).await;
+    assert!(!h.text().contains("$ z"));
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn sidebar_manages_windows() {
+    let env = Env::new("sbwin", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    rename_window(&mut h, "A", 2).await;
+    h.wait_text("1 A").await;
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    rename_window(&mut h, "B", 2).await;
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("3 sh").await;
+    rename_window(&mut h, "C", 2).await;
+    h.wait_for("three named windows", |t| t.contains("1 A") && t.contains("2 B") && t.contains("3 C")).await;
+    h.send("echo marker$((6*7))\r");
+    h.wait_text("marker42").await;
+
+    // reorder: move C up one place
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("K");
+    h.wait_for("reordered", |t| t.contains("2 C") && t.contains("3 B")).await;
+    assert!(h.text().contains("marker42"), "the active window followed the move");
+
+    // kill with confirmation: n cancels, y kills
+    h.send("x");
+    h.wait_text("kill window 2 (C)? (y/n)").await;
+    assert!(h.screen.row_text(29).starts_with(" kill window 2 (C)?"));
+    h.send("n");
+    h.wait_for("cancelled", |t| !t.contains("(y/n)")).await;
+    assert!(h.text().contains("2 C"));
+    h.send("jx");
+    h.wait_text("kill window 3 (B)? (y/n)").await;
+    h.send("y");
+    h.wait_for("B gone", |t| !t.contains("3 B")).await;
+    assert!(h.text().contains("1 A") && h.text().contains("2 C"));
+
+    // rename the selected window, not the active one
+    h.send("kr");
+    h.wait_text("rename window: A").await;
+    h.send("\x7fZ\r");
+    h.wait_for("renamed", |t| t.contains("1 Z") && t.contains("2 C")).await;
+    assert!(h.text().contains("marker42"), "still showing window C");
+
+    // open the selected window and leave the sidebar
+    h.send("\r");
+    h.wait_for("left sidebar", |t| !t.contains(SIDEBAR_HINT) && !t.contains("marker42")).await;
+
+    // new window from the sidebar
+    h.send(&format!("{CTRL_A}w"));
+    h.send("n");
+    h.wait_text("3 sh").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn sidebar_manages_sessions() {
+    let env = Env::new("sbsess", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}s"));
+    h.wait_text("sessions").await;
+    h.send(&format!("{CTRL_A}S"));
+    h.wait_text("2 1").await;
+
+    // select the first session and kill it
+    h.send(&format!("{CTRL_A}wk"));
+    h.send("x");
+    h.wait_text("kill session 1 (0)? (y/n)").await;
+    h.send("y");
+    h.wait_for("session 0 gone", |t| t.contains("1 1") && !t.contains("2 1")).await;
+    let (ok, out) = env.run(&["ls"]);
+    assert!(ok && out.contains("1: 1 window") && !out.contains("0: "), "{out}");
+
+    // sessions can be created, renamed and reordered from the sidebar
+    h.send("n");
+    h.wait_text("2 0").await;
+    h.send("r");
+    h.wait_text("rename session: 0").await;
+    h.send("\x7fwork\r");
+    h.wait_text("2 work").await;
+    h.send("K");
+    h.wait_for("moved up", |t| t.contains("1 work") && t.contains("2 1")).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}

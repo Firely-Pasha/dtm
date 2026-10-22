@@ -11,6 +11,8 @@ pub struct Item {
     /// Right-aligned status markers (activity, bell, zoom, ...).
     pub marks: String,
     pub active: bool,
+    /// The keyboard selection while the sidebar has focus.
+    pub selected: bool,
 }
 
 pub struct Footer {
@@ -23,6 +25,7 @@ pub struct SidebarView {
     pub subheader: String,
     pub items: Vec<Item>,
     pub footer: Option<Footer>,
+    pub focused: bool,
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -62,6 +65,8 @@ pub fn item_at(items: usize, active_idx: usize, rows: usize, has_footer: bool, r
 
 const BOLD: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD };
 const DIM: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
+const SELECTED: Attrs = Attrs { fg: Color::Idx(15), bg: Color::Idx(4), flags: flags::BOLD };
+const FOCUS_SEP: Attrs = Attrs { fg: Color::Idx(2), bg: Color::Default, flags: 0 };
 const REVERSE: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
 
 /// Draw the sidebar into columns `x0..x0+width` of the full height of `canvas`.
@@ -77,7 +82,7 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
     let text_w = width - 1;
     canvas.fill(x0, 0, width, rows, Cell::BLANK);
     for y in 0..rows {
-        canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: DIM });
+        canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: if view.focused { FOCUS_SEP } else { DIM } });
     }
     if rows == 0 {
         return;
@@ -93,11 +98,18 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
     let offset = scroll_offset(active_idx, capacity);
     for (row, item) in view.items.iter().skip(offset).take(capacity).enumerate() {
         let y = first + row;
-        let attrs = if item.active { REVERSE } else { Attrs::DEFAULT };
+        let attrs = if item.selected {
+            SELECTED
+        } else if item.active {
+            REVERSE
+        } else {
+            Attrs::DEFAULT
+        };
+        let lead = if item.selected { '›' } else { ' ' };
         canvas.fill(text_x, y, text_w, 1, Cell::blank(attrs));
         let marks_w = item.marks.width();
         let label_w = text_w.saturating_sub(marks_w + 2);
-        canvas.put_str(text_x, y, &format!(" {}", truncate(&item.label, label_w)), attrs, text_w);
+        canvas.put_str(text_x, y, &format!("{lead}{}", truncate(&item.label, label_w)), attrs, text_w);
         if marks_w > 0 && marks_w < text_w {
             canvas.put_str(text_x + text_w - marks_w - 1, y, &item.marks, attrs, marks_w);
         }
@@ -115,11 +127,11 @@ mod tests {
     use super::*;
 
     fn item(label: &str, marks: &str, active: bool) -> Item {
-        Item { label: label.into(), marks: marks.into(), active }
+        Item { label: label.into(), marks: marks.into(), active, selected: false }
     }
 
     fn view(items: Vec<Item>) -> SidebarView {
-        SidebarView { header: "main".into(), subheader: "windows".into(), items, footer: None }
+        SidebarView { header: "main".into(), subheader: "windows".into(), items, footer: None, focused: false }
     }
 
     #[test]
@@ -180,6 +192,19 @@ mod tests {
         assert_eq!(item_at(10, 9, 6, true, 1), None);
         assert_eq!(item_at(2, 0, 10, false, 3), Some(1));
         assert_eq!(item_at(2, 0, 10, false, 4), None);
+    }
+
+    #[test]
+    fn selected_row_is_marked_when_focused() {
+        let mut c = Canvas::new(14, 5);
+        let mut v = view(vec![item("1 a", "", true), item("2 b", "", false)]);
+        v.items[1].selected = true;
+        v.focused = true;
+        draw(&mut c, 0, 14, Position::Left, &v);
+        assert_eq!(c.cell(0, 3).ch, '›');
+        assert!(c.cell(1, 3).attrs.has(flags::BOLD) && !c.cell(1, 3).attrs.has(flags::REVERSE));
+        assert_eq!(c.cell(0, 2).ch, ' ');
+        assert_eq!(c.cell(13, 0).attrs.fg, Color::Idx(2));
     }
 
     #[test]

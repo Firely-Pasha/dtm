@@ -131,11 +131,16 @@ impl Server {
             SidebarMode::Windows => (s.windows.len(), s.active),
             SidebarMode::Sessions => (self.sessions.len(), si),
         };
-        let has_footer = c.prompt.is_some() || c.message.is_some();
+        let has_footer = self.footer_visible(c);
         let Some(idx) = sidebar::item_at(count, active, c.rows as usize, has_footer, m.y as usize) else { return };
-        match c.sidebar_mode {
+        let mode = c.sidebar_mode;
+        if let Some(c) = self.clients.get_mut(&cid)
+            && c.sidebar_focus.is_some() {
+                c.sidebar_focus = Some(idx);
+            }
+        match mode {
             SidebarMode::Windows => {
-                let sid = s.id;
+                let sid = self.sessions[si].id;
                 self.select_window(sid, idx);
             }
             SidebarMode::Sessions => {

@@ -504,8 +504,36 @@ impl Server {
 
     // ---- rendering ----
 
+    /// Does the sidebar draw a footer line for this client? (Not for prompts.)
+    pub fn footer_visible(&self, c: &Client) -> bool {
+        c.message.is_some() || c.sidebar_focus.is_some()
+    }
+
+    /// Keep each client's sidebar selection inside its list.
+    fn clamp_sidebar_focus(&mut self) {
+        let counts: Vec<(ClientId, usize)> = self
+            .clients
+            .values()
+            .filter(|c| c.sidebar_focus.is_some())
+            .map(|c| {
+                let n = match (c.sidebar_mode, c.session.and_then(|id| self.sessions.iter().find(|s| s.id == id))) {
+                    (SidebarMode::Windows, Some(s)) => s.windows.len(),
+                    (SidebarMode::Sessions, _) => self.sessions.len(),
+                    _ => 0,
+                };
+                (c.id, n)
+            })
+            .collect();
+        for (id, n) in counts {
+            if let Some(c) = self.clients.get_mut(&id) {
+                c.sidebar_focus = if n == 0 { None } else { c.sidebar_focus.map(|f| f.min(n - 1)) };
+            }
+        }
+    }
+
     pub fn flush(&mut self) {
         self.render_at = None;
+        self.clamp_sidebar_focus();
         let mut contents: HashMap<SessionId, Canvas> = HashMap::new();
         let mut frames: Vec<(ClientId, Canvas)> = Vec::new();
         for c in self.clients.values() {
@@ -543,7 +571,7 @@ impl Server {
                         if w.activity {
                             marks.push('●');
                         }
-                        Item { label: format!("{} {}", i + 1, w.name()), marks, active: i == s.active }
+                        Item { label: format!("{} {}", i + 1, w.name()), marks, active: i == s.active, selected: c.sidebar_focus == Some(i) }
                     })
                     .collect();
                 (s.name.clone(), "windows".to_string(), items)
@@ -559,22 +587,21 @@ impl Server {
                             label: format!("{} {}", i + 1, o.name),
                             marks: format!("{}w{}", o.windows.len(), if elsewhere { "*" } else { "" }),
                             active: o.id == s.id,
+                            selected: c.sidebar_focus == Some(i),
                         }
                     })
                     .collect();
                 ("dtm".to_string(), "sessions".to_string(), items)
             }
         };
-        let footer = if let Some(p) = &c.prompt {
-            let label = match p.kind {
-                state::PromptKind::RenameWindow => "rename window",
-                state::PromptKind::RenameSession => "rename session",
-            };
-            Some(Footer { text: format!("{label}: {}", p.text), prompt: true })
-        } else {
-            c.message.as_ref().map(|(m, _)| Footer { text: m.clone(), prompt: false })
+        let footer = match &c.message {
+            Some((m, _)) => Some(Footer { text: m.clone(), prompt: false }),
+            None if c.sidebar_focus.is_some() => {
+                Some(Footer { text: "j/k ⏎ x r J/K n q".to_string(), prompt: false })
+            }
+            None => None,
         };
-        SidebarView { header, subheader, items, footer }
+        SidebarView { header, subheader, items, footer, focused: c.sidebar_focus.is_some() }
     }
 
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {
@@ -594,27 +621,22 @@ impl Server {
         let view = self.sidebar_view(c, s);
         if sw > 0 {
             sidebar::draw(&mut canvas, sidebar_x, sw, self.cfg.sidebar.position, &view);
-            if let (Some(f), true) = (&view.footer, c.prompt.is_some()) {
-                use unicode_width::UnicodeWidthStr;
-                let text_x = match self.cfg.sidebar.position {
-                    Position::Left => 0,
-                    Position::Right => sidebar_x + 1,
-                };
-                let x = text_x + 1 + f.text.width();
-                canvas.cursor = Some((x.min(text_x + sw.saturating_sub(2)), rows - 1));
-            }
         } else if let Some(f) = &view.footer {
-            // No sidebar: show the prompt or message on the bottom row.
-            let attrs = Attrs {
-                fg: Color::Default,
-                bg: Color::Default,
-                flags: if f.prompt { flags::REVERSE } else { 0 },
-            };
+            // No sidebar: show messages on the bottom row.
+            let attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
             canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
-            let used = canvas.put_str(0, rows - 1, &f.text, attrs, cols);
-            if f.prompt {
-                canvas.cursor = Some((used.min(cols - 1), rows - 1));
-            }
+            canvas.put_str(0, rows - 1, &f.text, attrs, cols);
+        }
+        if c.sidebar_focus.is_some() {
+            canvas.cursor = None;
+        }
+        if let Some(p) = &c.prompt {
+            // Prompts take the whole bottom row, over the sidebar and the panes.
+            let attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
+            let text = if p.kind.is_confirm() { format!(" {}", p.label) } else { format!(" {}: {}", p.label, p.text) };
+            canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
+            let used = canvas.put_str(0, rows - 1, &text, attrs, cols);
+            canvas.cursor = (!p.kind.is_confirm()).then(|| (used.min(cols - 1), rows - 1));
         }
         canvas
     }

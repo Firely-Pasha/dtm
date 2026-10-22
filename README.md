@@ -35,11 +35,17 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `S` | new session | `$` | rename session |
 | `(` / `)` | previous / next session | `b` | show / hide sidebar |
 | `s` | sidebar: windows ↔ sessions | `d` | detach |
+| `w` | focus the sidebar | | |
 | `[` or `PageUp` | copy mode | `]` | paste |
 | `a` | send a literal Ctrl-a | `r` | reload config |
 
+**Resizing**: after `<prefix> H J K L` (5 cells), plain `h j k l` keep
+resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
+don't have to press the prefix again for every step. Any other key ends it.
+
 **Copy mode** (`k j h l`, `PageUp/Down`, `Ctrl-u/d`, `g`/`G` for top/bottom,
-`0`/`$`, `v` to select, `y` to copy and leave, `q` to cancel). Copied text is
+`0`/`$`, `v` to select, `V` to select whole lines, `y` to copy and leave, `q`
+to cancel). Copied text is
 kept in dtm's paste buffer and also sent to the terminal clipboard (OSC 52).
 
 **Mouse**: click a sidebar entry to switch window or session, click a pane to
@@ -55,13 +61,25 @@ zoomed). `<prefix> s` toggles it to a list of sessions. Window names come from
 `rename-window`, else the pane's title (OSC 0/2), else the foreground process.
 It hides itself when the terminal is too narrow.
 
+**The sidebar can take keyboard focus** with `<prefix> w`, or by moving focus
+towards it (`<prefix> h` from the leftmost pane, or a root binding such as
+`"C-h" = "focus-left"`; the opposite direction leaves it). While focused:
+`j`/`k` select, `Enter` opens, `x` kills (after a y/n confirmation), `r`
+renames, `J`/`K` reorder, `n` creates a window or session, `Tab` toggles the
+list, `q` leaves. All of it is configurable in `[keys.sidebar]`.
+
+Prompts (rename, kill confirmation) use a bar across the whole bottom row.
+
 ## Configuration
 
 `~/.config/dtm/config.toml` (or `$DTM_CONFIG`). See
 [config.example.toml](config.example.toml) for every option and binding; it is
 checked by the test suite to match the built-in defaults.
 
-- `[keys.prefix]`, `[keys.root]` and `[keys.copy]` map keys to actions. Set a
+- `options.shell` is the program started in new panes (default `$SHELL`, then
+  `/bin/sh`).
+- `[keys.prefix]`, `[keys.root]`, `[keys.copy]`, `[keys.resize]` and
+  `[keys.sidebar]` map keys to actions. Set a
   binding to `"none"` to remove a default.
 - Key notation: `C-a`, `M-h`, `S-Left`, `C-M-x`, `F5`, `PageUp`, `Space`, or a
   single character.
@@ -73,7 +91,8 @@ checked by the test suite to match the built-in defaults.
   `toggle-sidebar-mode`, `copy-mode`, `paste-buffer`, `detach`, `send-prefix`,
   `reload-config`, and in copy mode `copy-up|down|left|right`,
   `copy-page-up|down`, `copy-half-page-up|down`, `copy-top|bottom`,
-  `copy-line-start|end`, `copy-select`, `copy-yank`, `copy-cancel`.
+  `copy-line-start|end`, `copy-select`, `copy-select-line`, `copy-yank`,
+  `copy-cancel`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|leave`.
 - A config error is reported by `dtm reload` / `<prefix> r` and the running
   configuration stays active.
 

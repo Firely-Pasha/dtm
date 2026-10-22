@@ -12,6 +12,8 @@ pub struct CopyMode {
     pub cy: usize,
     /// Selection start as (absolute line, column).
     pub anchor: Option<(usize, usize)>,
+    /// The selection covers whole lines.
+    pub line_mode: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -24,7 +26,7 @@ pub enum Outcome {
 impl CopyMode {
     pub fn new(screen: &Screen) -> CopyMode {
         let (cx, cy) = screen.cursor_pos();
-        CopyMode { offset: 0, cx, cy, anchor: None }
+        CopyMode { offset: 0, cx, cy, anchor: None, line_mode: false }
     }
 
     /// Absolute index of the first visible line.
@@ -105,8 +107,20 @@ impl CopyMode {
                 self.cx = last;
             }
             CopyCmd::Select => {
+                self.line_mode = false;
                 self.anchor = if self.anchor.is_some() { None } else { Some(self.cursor_abs(s)) };
             }
+            CopyCmd::SelectLine => match (self.anchor, self.line_mode) {
+                (None, _) => {
+                    self.anchor = Some(self.cursor_abs(s));
+                    self.line_mode = true;
+                }
+                (Some(_), true) => {
+                    self.anchor = None;
+                    self.line_mode = false;
+                }
+                (Some(_), false) => self.line_mode = true,
+            },
             CopyCmd::Yank => return Outcome::Yanked(self.selected_text(s)),
             CopyCmd::Cancel => return Outcome::Exit,
         }
@@ -132,6 +146,9 @@ impl CopyMode {
     pub fn selection(&self, s: &Screen) -> Option<((usize, usize), (usize, usize))> {
         let a = self.anchor?;
         let b = self.cursor_abs(s);
+        if self.line_mode {
+            return Some(((a.0.min(b.0), 0), (a.0.max(b.0), usize::MAX)));
+        }
         Some(if a <= b { (a, b) } else { (b, a) })
     }
 
@@ -274,6 +291,36 @@ mod tests {
         assert_eq!(m.selected_text(&s), "line8");
         m.apply(CopyCmd::Select, &s);
         assert!(m.anchor.is_none());
+    }
+
+    #[test]
+    fn line_mode_selects_whole_lines() {
+        let s = screen();
+        let mut m = CopyMode::new(&s);
+        m.apply(CopyCmd::Top, &s);
+        m.apply(CopyCmd::Right, &s);
+        m.apply(CopyCmd::SelectLine, &s);
+        m.apply(CopyCmd::Down, &s);
+        assert_eq!(m.apply(CopyCmd::Yank, &s), Outcome::Yanked("line1\nline2".into()));
+        // selecting upwards covers the same lines
+        let mut m = CopyMode::new(&s);
+        m.apply(CopyCmd::SelectLine, &s);
+        m.apply(CopyCmd::Up, &s);
+        assert_eq!(m.selected_text(&s), "line7\nline8");
+    }
+
+    #[test]
+    fn select_line_toggles_and_switches_mode() {
+        let s = screen();
+        let mut m = CopyMode::new(&s);
+        m.apply(CopyCmd::Select, &s);
+        m.apply(CopyCmd::SelectLine, &s);
+        assert!(m.anchor.is_some() && m.line_mode);
+        m.apply(CopyCmd::SelectLine, &s);
+        assert!(m.anchor.is_none() && !m.line_mode);
+        m.apply(CopyCmd::SelectLine, &s);
+        m.apply(CopyCmd::Select, &s);
+        assert!(m.anchor.is_none() && !m.line_mode);
     }
 
     #[test]
