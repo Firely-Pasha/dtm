@@ -1,0 +1,130 @@
+//! Named commands that key bindings map to.
+
+use std::str::FromStr;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    NewWindow,
+    KillWindow,
+    NextWindow,
+    PrevWindow,
+    /// 1-based, as shown in the sidebar.
+    SelectWindow(usize),
+    RenameWindow,
+    SplitVertical,
+    SplitHorizontal,
+    Focus(Dir),
+    FocusNext,
+    Resize(Dir, u16),
+    KillPane,
+    ZoomPane,
+    NewSession,
+    NextSession,
+    PrevSession,
+    SelectSession(usize),
+    RenameSession,
+    ToggleSidebar,
+    ToggleSidebarMode,
+    Detach,
+    SendPrefix,
+    ReloadConfig,
+}
+
+fn number<T: FromStr>(arg: Option<&str>, name: &str) -> Result<T, String> {
+    arg.ok_or_else(|| format!("{name} needs a number"))?
+        .parse()
+        .map_err(|_| format!("{name}: invalid number"))
+}
+
+impl FromStr for Action {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Action, String> {
+        let mut parts = s.split_whitespace();
+        let name = parts.next().ok_or("empty action")?;
+        let arg = parts.next();
+        if parts.next().is_some() {
+            return Err(format!("too many arguments for {name}"));
+        }
+        let no_arg = |a: Action| -> Result<Action, String> {
+            if arg.is_some() { Err(format!("{name} takes no argument")) } else { Ok(a) }
+        };
+        let amount = || -> Result<u16, String> {
+            match arg {
+                None => Ok(1),
+                Some(_) => number(arg, name),
+            }
+        };
+        match name {
+            "new-window" => no_arg(Action::NewWindow),
+            "kill-window" => no_arg(Action::KillWindow),
+            "next-window" => no_arg(Action::NextWindow),
+            "prev-window" => no_arg(Action::PrevWindow),
+            "select-window" => {
+                let n: usize = number(arg, name)?;
+                if n == 0 { Err("select-window is 1-based".into()) } else { Ok(Action::SelectWindow(n)) }
+            }
+            "rename-window" => no_arg(Action::RenameWindow),
+            "split-vertical" => no_arg(Action::SplitVertical),
+            "split-horizontal" => no_arg(Action::SplitHorizontal),
+            "focus-left" => no_arg(Action::Focus(Dir::Left)),
+            "focus-right" => no_arg(Action::Focus(Dir::Right)),
+            "focus-up" => no_arg(Action::Focus(Dir::Up)),
+            "focus-down" => no_arg(Action::Focus(Dir::Down)),
+            "focus-next" => no_arg(Action::FocusNext),
+            "resize-left" => Ok(Action::Resize(Dir::Left, amount()?)),
+            "resize-right" => Ok(Action::Resize(Dir::Right, amount()?)),
+            "resize-up" => Ok(Action::Resize(Dir::Up, amount()?)),
+            "resize-down" => Ok(Action::Resize(Dir::Down, amount()?)),
+            "kill-pane" => no_arg(Action::KillPane),
+            "zoom-pane" => no_arg(Action::ZoomPane),
+            "new-session" => no_arg(Action::NewSession),
+            "next-session" => no_arg(Action::NextSession),
+            "prev-session" => no_arg(Action::PrevSession),
+            "select-session" => {
+                let n: usize = number(arg, name)?;
+                if n == 0 { Err("select-session is 1-based".into()) } else { Ok(Action::SelectSession(n)) }
+            }
+            "rename-session" => no_arg(Action::RenameSession),
+            "toggle-sidebar" => no_arg(Action::ToggleSidebar),
+            "toggle-sidebar-mode" => no_arg(Action::ToggleSidebarMode),
+            "detach" => no_arg(Action::Detach),
+            "send-prefix" => no_arg(Action::SendPrefix),
+            "reload-config" => no_arg(Action::ReloadConfig),
+            _ => Err(format!("unknown action {name:?}")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_actions() {
+        assert_eq!("new-window".parse(), Ok(Action::NewWindow));
+        assert_eq!("select-window 3".parse(), Ok(Action::SelectWindow(3)));
+        assert_eq!("resize-left 5".parse(), Ok(Action::Resize(Dir::Left, 5)));
+        assert_eq!("resize-down".parse(), Ok(Action::Resize(Dir::Down, 1)));
+        assert_eq!("  focus-up ".parse(), Ok(Action::Focus(Dir::Up)));
+    }
+
+    #[test]
+    fn rejects_bad_actions() {
+        assert!("".parse::<Action>().is_err());
+        assert!("bogus".parse::<Action>().is_err());
+        assert!("select-window".parse::<Action>().is_err());
+        assert!("select-window 0".parse::<Action>().is_err());
+        assert!("select-window x".parse::<Action>().is_err());
+        assert!("detach now".parse::<Action>().is_err());
+        assert!("resize-left 1 2".parse::<Action>().is_err());
+    }
+}

@@ -1,0 +1,168 @@
+//! Drawing of the vertical tab sidebar.
+
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::config::Position;
+use crate::term::canvas::Canvas;
+use crate::term::cell::{flags, Attrs, Cell, Color};
+
+pub struct Item {
+    pub label: String,
+    /// Right-aligned status markers (activity, bell, zoom, ...).
+    pub marks: String,
+    pub active: bool,
+}
+
+pub struct Footer {
+    pub text: String,
+    pub prompt: bool,
+}
+
+pub struct SidebarView {
+    pub header: String,
+    pub subheader: String,
+    pub items: Vec<Item>,
+    pub footer: Option<Footer>,
+}
+
+pub fn truncate(s: &str, max: usize) -> String {
+    if s.width() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > max - 1 {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    out.push('…');
+    out
+}
+
+const BOLD: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD };
+const DIM: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
+const REVERSE: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
+
+/// Draw the sidebar into columns `x0..x0+width` of the full height of `canvas`.
+pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, view: &SidebarView) {
+    if width < 2 {
+        return;
+    }
+    let rows = canvas.rows;
+    let (sep_x, text_x) = match position {
+        Position::Left => (x0 + width - 1, x0),
+        Position::Right => (x0, x0 + 1),
+    };
+    let text_w = width - 1;
+    canvas.fill(x0, 0, width, rows, Cell::BLANK);
+    for y in 0..rows {
+        canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: DIM });
+    }
+    if rows == 0 {
+        return;
+    }
+    canvas.put_str(text_x, 0, &format!(" {}", truncate(&view.header, text_w.saturating_sub(1))), BOLD, text_w);
+    if rows > 1 {
+        canvas.put_str(text_x, 1, &format!(" {}", truncate(&view.subheader, text_w.saturating_sub(1))), DIM, text_w);
+    }
+    let footer_rows = usize::from(view.footer.is_some());
+    let first = 2;
+    let capacity = rows.saturating_sub(first + footer_rows);
+    let active_idx = view.items.iter().position(|i| i.active).unwrap_or(0);
+    let offset = if capacity > 0 && active_idx >= capacity { active_idx + 1 - capacity } else { 0 };
+    for (row, item) in view.items.iter().skip(offset).take(capacity).enumerate() {
+        let y = first + row;
+        let attrs = if item.active { REVERSE } else { Attrs::DEFAULT };
+        canvas.fill(text_x, y, text_w, 1, Cell::blank(attrs));
+        let marks_w = item.marks.width();
+        let label_w = text_w.saturating_sub(marks_w + 2);
+        canvas.put_str(text_x, y, &format!(" {}", truncate(&item.label, label_w)), attrs, text_w);
+        if marks_w > 0 && marks_w < text_w {
+            canvas.put_str(text_x + text_w - marks_w - 1, y, &item.marks, attrs, marks_w);
+        }
+    }
+    if let Some(f) = &view.footer {
+        let y = rows - 1;
+        let attrs = if f.prompt { REVERSE } else { DIM };
+        canvas.fill(text_x, y, text_w, 1, Cell::blank(attrs));
+        canvas.put_str(text_x, y, &format!(" {}", truncate(&f.text, text_w.saturating_sub(1))), attrs, text_w);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(label: &str, marks: &str, active: bool) -> Item {
+        Item { label: label.into(), marks: marks.into(), active }
+    }
+
+    fn view(items: Vec<Item>) -> SidebarView {
+        SidebarView { header: "main".into(), subheader: "windows".into(), items, footer: None }
+    }
+
+    #[test]
+    fn truncates_by_display_width() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello world", 6), "hello…");
+        assert_eq!(truncate("日本語日本語", 5), "日本…");
+        assert_eq!(truncate("abc", 0), "");
+    }
+
+    #[test]
+    fn draws_left_sidebar() {
+        let mut c = Canvas::new(20, 6);
+        draw(&mut c, 0, 12, Position::Left, &view(vec![item("1 vim", "●", false), item("2 sh", "", true)]));
+        assert_eq!(c.row_text(0), " main      │");
+        assert_eq!(c.row_text(1), " windows   │");
+        assert_eq!(c.row_text(2), " 1 vim   ● │");
+        assert_eq!(c.row_text(3), " 2 sh      │");
+        assert!(c.cell(1, 3).attrs.has(flags::REVERSE));
+        assert!(!c.cell(1, 2).attrs.has(flags::REVERSE));
+        assert_eq!(c.cell(11, 5).ch, '│');
+    }
+
+    #[test]
+    fn draws_right_sidebar() {
+        let mut c = Canvas::new(20, 4);
+        draw(&mut c, 8, 12, Position::Right, &view(vec![item("1 sh", "", true)]));
+        assert_eq!(c.cell(8, 0).ch, '│');
+        assert_eq!(c.cell(9, 0).ch, ' ');
+        assert_eq!(c.cell(10, 0).ch, 'm');
+    }
+
+    #[test]
+    fn long_labels_keep_marks() {
+        let mut c = Canvas::new(14, 4);
+        draw(&mut c, 0, 14, Position::Left, &view(vec![item("1 a-very-long-window-name", "!", false)]));
+        let row = c.row_text(2);
+        assert!(row.contains('…') && row.contains('!'), "{row:?}");
+        assert_eq!(row.chars().count(), 14);
+    }
+
+    #[test]
+    fn scrolls_to_keep_active_visible() {
+        let items: Vec<Item> = (1..=10).map(|i| item(&format!("w{i}"), "", i == 10)).collect();
+        let mut c = Canvas::new(14, 6);
+        draw(&mut c, 0, 14, Position::Left, &view(items));
+        // capacity is 4 rows (6 - 2 header rows)
+        assert!(c.row_text(2).contains("w7"));
+        assert!(c.row_text(5).contains("w10"));
+    }
+
+    #[test]
+    fn footer_is_drawn_on_last_row() {
+        let mut c = Canvas::new(14, 5);
+        let mut v = view(vec![item("1 sh", "", true)]);
+        v.footer = Some(Footer { text: "rename: x".into(), prompt: true });
+        draw(&mut c, 0, 14, Position::Left, &v);
+        assert!(c.row_text(4).contains("rename: x"));
+    }
+}

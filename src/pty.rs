@@ -56,11 +56,10 @@ impl Pty {
             .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
             .env_remove("TERM_PROGRAM");
-        if let Some(cwd) = &opts.cwd {
-            if cwd.is_dir() {
+        if let Some(cwd) = &opts.cwd
+            && cwd.is_dir() {
                 cmd.current_dir(cwd);
             }
-        }
         // SAFETY: only async-signal-safe libc calls between fork and exec.
         unsafe {
             cmd.pre_exec(|| {
@@ -77,7 +76,8 @@ impl Pty {
         let pid = child.id().unwrap_or(0);
         drop(cmd);
 
-        let master = Arc::new(AsyncFd::new(master)?);
+        // SAFETY: the AsyncFd takes ownership of the fd and nothing else closes it.
+        let master = Arc::new(unsafe { AsyncFd::register(master)? });
         let on_event: Arc<dyn Fn(PtyEvent) + Send + Sync> = Arc::new(on_event);
         let mut tasks = Vec::new();
 

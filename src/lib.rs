@@ -1,4 +1,11 @@
+pub mod action;
+pub mod client;
+pub mod config;
 pub mod debug;
+pub mod keys;
+pub mod paths;
+pub mod protocol;
 pub mod pty;
+pub mod server;
 pub mod term;
 pub mod tty;

@@ -1,8 +1,10 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use dtm::protocol::AttachMode;
+use dtm::{client, config::Config, paths, server};
 
 #[derive(Parser)]
-#[command(name = "dtm", about = "A terminal multiplexer")]
+#[command(name = "dtm", version, about = "A terminal multiplexer")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
@@ -10,15 +12,84 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Start a new session.
+    New {
+        /// Name of the new session.
+        #[arg(short = 's', long)]
+        session: Option<String>,
+    },
+    /// Attach to an existing session.
+    Attach {
+        /// Session to attach to (default: the first one).
+        #[arg(short = 't', long)]
+        target: Option<String>,
+    },
+    /// List sessions.
+    Ls,
+    /// Terminate the server and every session.
+    KillServer,
+    /// Re-read the configuration file.
+    Reload,
+    #[command(hide = true)]
+    Server,
     /// Run one local shell through the emulator (no server).
     #[command(hide = true)]
     DebugRun,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn init_logging() {
+    let path = paths::log_path();
+    let (Some(dir), Some(file)) = (path.parent(), path.file_name()) else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let appender = tracing_appender::rolling::never(dir, file);
+    let _ = tracing_subscriber::fmt().with_writer(appender).with_ansi(false).try_init();
+}
+
+async fn run_server() -> Result<()> {
+    init_logging();
+    let cfg_path = paths::config_path();
+    let cfg = Config::load(&cfg_path).unwrap_or_else(|e| {
+        tracing::error!("config error, using defaults: {e}");
+        Config::default()
+    });
+    server::run(paths::socket_path(), cfg, Some(cfg_path)).await
+}
+
+async fn real_main(cli: Cli) -> Result<()> {
     match cli.command {
-        Some(Cmd::DebugRun) | None => dtm::debug::run().await,
+        None => client::attach(AttachMode::Default, None).await,
+        Some(Cmd::New { session }) => client::attach(AttachMode::New, session).await,
+        Some(Cmd::Attach { target }) => client::attach(AttachMode::Existing, target).await,
+        Some(Cmd::Ls) => {
+            let sessions = client::list().await?;
+            if sessions.is_empty() {
+                println!("no sessions");
+            }
+            for s in sessions {
+                let plural = if s.windows == 1 { "window" } else { "windows" };
+                let attached = if s.attached > 0 { " (attached)" } else { "" };
+                println!("{}: {} {plural}{attached}", s.name, s.windows);
+            }
+            Ok(())
+        }
+        Some(Cmd::KillServer) => client::kill_server().await,
+        Some(Cmd::Reload) => {
+            client::reload().await?;
+            println!("config reloaded");
+            Ok(())
+        }
+        Some(Cmd::Server) => run_server().await,
+        Some(Cmd::DebugRun) => dtm::debug::run().await,
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+    if let Err(e) = real_main(cli).await {
+        eprintln!("dtm: {e:#}");
+        std::process::exit(1);
     }
 }

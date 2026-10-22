@@ -1,0 +1,61 @@
+//! Wire protocol between client and server: length-prefixed bincode frames.
+
+use std::path::PathBuf;
+
+use anyhow::Result;
+use bytes::Bytes;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use tokio::net::UnixStream;
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachMode {
+    /// Attach to the named (or first) session, creating it if missing.
+    Default,
+    /// Always create a new session.
+    New,
+    /// Attach to an existing session only.
+    Existing,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ClientMsg {
+    Attach { mode: AttachMode, name: Option<String>, cols: u16, rows: u16, cwd: PathBuf },
+    Input(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+    Detach,
+    List,
+    KillServer,
+    Reload,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub name: String,
+    pub windows: usize,
+    pub attached: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum ServerMsg {
+    Output(Vec<u8>),
+    Detached,
+    Exited,
+    Error(String),
+    Sessions(Vec<SessionInfo>),
+    Ok,
+}
+
+pub type Conn = Framed<UnixStream, LengthDelimitedCodec>;
+
+pub fn framed(stream: UnixStream) -> Conn {
+    LengthDelimitedCodec::builder().max_frame_length(64 << 20).new_framed(stream)
+}
+
+pub fn encode<T: Serialize>(msg: &T) -> Bytes {
+    Bytes::from(bincode::serialize(msg).expect("serializable message"))
+}
+
+pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    Ok(bincode::deserialize(bytes)?)
+}

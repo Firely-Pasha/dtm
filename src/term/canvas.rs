@@ -325,6 +325,6 @@ mod tests {
         a.put_str(0, 0, "a b c", Attrs::DEFAULT, 20);
         b.put_str(0, 0, "a x c", Attrs::DEFAULT, 20);
         let out = String::from_utf8(b.diff(Some(&a))).unwrap();
-        assert_eq!(out.matches('H').count(), 1 + 0, "{out:?}");
+        assert_eq!(out.matches('H').count(), 1, "{out:?}");
     }
 }

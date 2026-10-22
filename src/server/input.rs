@@ -1,0 +1,92 @@
+//! Client input: key decoding, prefix handling, key tables, and prompts.
+
+use std::time::Duration;
+
+use super::state::ClientId;
+use super::{Event, Server};
+use crate::keys::{self, Key, KeyEvent};
+
+/// How long a lone ESC waits to see whether it starts an escape sequence.
+const ESC_TIMEOUT: Duration = Duration::from_millis(25);
+const MAX_PROMPT: usize = 64;
+
+impl Server {
+    pub fn handle_input(&mut self, cid: ClientId, data: Vec<u8>) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        if c.session.is_none() {
+            return;
+        }
+        c.key_buf.extend_from_slice(&data);
+        self.touch(cid);
+        self.process_keys(cid, false);
+    }
+
+    pub fn process_keys(&mut self, cid: ClientId, flush: bool) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let events = keys::decode(&mut c.key_buf, flush);
+        for ev in events {
+            if !self.clients.contains_key(&cid) {
+                return;
+            }
+            self.handle_key(cid, ev);
+        }
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        if !c.key_buf.is_empty() && !c.flush_scheduled {
+            c.flush_scheduled = true;
+            let tx = self.events.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(ESC_TIMEOUT).await;
+                let _ = tx.send(Event::KeyFlush { id: cid });
+            });
+        }
+    }
+
+    fn handle_key(&mut self, cid: ClientId, ev: KeyEvent) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        if c.prompt.is_some() {
+            return self.prompt_key(cid, ev);
+        }
+        if let Some(prefix_raw) = c.prefix.take() {
+            self.mark_dirty();
+            if let Some(action) = self.cfg.prefix_keys.get(&ev.combo()).cloned() {
+                self.run_action(cid, action, Some(prefix_raw));
+            }
+            return;
+        }
+        if ev.combo() == self.cfg.prefix {
+            c.prefix = Some(ev.raw);
+            return;
+        }
+        if let Some(action) = self.cfg.root_keys.get(&ev.combo()).cloned() {
+            self.run_action(cid, action, None);
+            return;
+        }
+        self.forward(cid, ev.raw);
+    }
+
+    fn forward(&mut self, cid: ClientId, raw: Vec<u8>) {
+        let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
+        let Some(s) = self.sessions.iter().find(|s| s.id == sid) else { return };
+        if let Some(p) = self.panes.get(&s.active_window().active) {
+            p.pty.write(raw);
+        }
+    }
+
+    fn prompt_key(&mut self, cid: ClientId, ev: KeyEvent) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let Some(p) = c.prompt.as_mut() else { return };
+        match ev.key {
+            Key::Enter => {
+                let p = c.prompt.take().unwrap();
+                self.commit_prompt(cid, p.kind, p.text);
+            }
+            Key::Escape => c.prompt = None,
+            Key::Backspace => {
+                p.text.pop();
+            }
+            Key::Char(ch) if ev.mods & !keys::SHIFT == 0 && p.text.chars().count() < MAX_PROMPT => p.text.push(ch),
+            _ => {}
+        }
+        self.mark_dirty();
+    }
+}

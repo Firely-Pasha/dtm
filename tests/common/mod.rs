@@ -78,6 +78,18 @@ impl Harness {
         }
     }
 
+    /// Wait until the cell at (x, y) holds `ch`.
+    pub async fn wait_cell(&mut self, x: usize, y: usize, ch: char) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.screen.cell(x, y).ch != ch {
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for {ch:?} at {x},{y}; screen:\n{}", self.text());
+            if let Ok(Some(PtyEvent::Output(d))) = tokio::time::timeout(left, self.rx.recv()).await {
+                self.screen.feed(&d);
+            }
+        }
+    }
+
     pub async fn wait_text(&mut self, needle: &str) {
         let n = needle.to_string();
         self.wait_for(&format!("{needle:?}"), move |t| t.contains(&n)).await;
