@@ -29,8 +29,8 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 |---|---|---|---|
 | `c` | new window | `\|` | split side by side |
 | `n` / `p` | next / previous window | `-` | split stacked |
-| `1`-`9` | select window | arrows, `h j k l` | move focus |
-| `,` | rename window | `H J K L` | resize pane by 5 |
+| `1`-`9` | select window | arrows, `Ctrl-h/j/k/l` | move focus |
+| `,` | rename window | `h j k l` (or `H J K L`) | resize pane by 5 |
 | `&` | kill window | `o` | next pane |
 | `x` | kill pane | `z` | zoom pane |
 | `S` | new session | `$` | rename session |
@@ -44,7 +44,7 @@ Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
 | `[` or `PageUp` | copy mode | `]` | paste |
 | `a` | send a literal Ctrl-a | `r` | reload config |
 
-**Resizing**: after `<prefix> H J K L` (5 cells), plain `h j k l` keep
+**Resizing**: `<prefix> h j k l` resizes by 5 cells, then plain `h j k l` keep
 resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
 don't have to press the prefix again for every step. Any other key ends it.
 
@@ -108,7 +108,7 @@ zoomed). `<prefix> s` toggles it to a list of sessions. Window names come from
 It hides itself when the terminal is too narrow.
 
 **The sidebar can take keyboard focus** with `<prefix> w`, or by moving focus
-towards it (`<prefix> h` from the leftmost pane, or a root binding such as
+towards it (`<prefix> Left` from the leftmost pane, or a root binding such as
 `"C-h" = "focus-left"`; the opposite direction leaves it). While focused:
 `j`/`k` select (and show) the window or session as the highlight moves
 (`sidebar.follow`, on by default), `Enter` or `q` leave, `x` kills (after a y/n confirmation), `r`

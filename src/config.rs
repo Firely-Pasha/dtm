@@ -112,10 +112,10 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("Right", "focus-right"),
     ("Up", "focus-up"),
     ("Down", "focus-down"),
-    ("h", "focus-left"),
-    ("l", "focus-right"),
-    ("k", "focus-up"),
-    ("j", "focus-down"),
+    ("h", "resize-left 5"),
+    ("l", "resize-right 5"),
+    ("k", "resize-up 5"),
+    ("j", "resize-down 5"),
     ("H", "resize-left 5"),
     ("L", "resize-right 5"),
     ("K", "resize-up 5"),
@@ -453,6 +453,18 @@ mod tests {
         assert_eq!(c.sidebar_keys[&(Key::Char('h'), 0)], Action::Sidebar(SidebarCmd::Leave));
         assert!(!c.sidebar_keys.contains_key(&(Key::Char('l'), 0)));
         assert!(Config::from_toml("[keys.sidebar]\n\"x\" = \"bogus\"").is_err());
+    }
+
+    #[test]
+    fn prefix_hjkl_resize_and_arrows_focus() {
+        let d = Config::default();
+        assert_eq!(d.prefix_keys[&(Key::Char('h'), 0)], Action::Resize(Dir::Left, 5));
+        assert_eq!(d.prefix_keys[&(Key::Char('j'), 0)], Action::Resize(Dir::Down, 5));
+        assert_eq!(d.prefix_keys[&(Key::Char('k'), 0)], Action::Resize(Dir::Up, 5));
+        assert_eq!(d.prefix_keys[&(Key::Char('l'), 0)], Action::Resize(Dir::Right, 5));
+        assert_eq!(d.prefix_keys[&(Key::Left, 0)], Action::Focus(Dir::Left));
+        assert_eq!(d.prefix_keys[&(Key::Down, 0)], Action::Focus(Dir::Down));
+        assert_eq!(d.prefix_keys[&(Key::Char('o'), 0)], Action::FocusNext);
     }
 
     #[test]

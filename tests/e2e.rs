@@ -304,10 +304,10 @@ async fn focus_and_resize_panes() {
     h.wait_for("wider pane", |t| last_size(t, 30).is_some_and(|c| c > right)).await;
 
     // focus the left pane and type there, then back right and with focus-next
-    h.send(&format!("{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}\x1b[D"));
     h.send("echo left$((1+1))\r");
     h.wait_text("left2").await;
-    h.send(&format!("{CTRL_A}l"));
+    h.send(&format!("{CTRL_A}\x1b[C"));
     h.send("echo right$((1+2))\r");
     h.wait_text("right3").await;
     h.send(&format!("{CTRL_A}o"));
@@ -546,18 +546,18 @@ async fn sidebar_takes_focus_from_the_panes() {
     h.wait_for("left sidebar", |t| !t.contains(SIDEBAR_HINT)).await;
 
     // the prefix keys do the same
-    h.send(&format!("{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}\x1b[D"));
     h.wait_text(SIDEBAR_HINT).await;
-    h.send(&format!("{CTRL_A}l"));
+    h.send(&format!("{CTRL_A}\x1b[C"));
     h.wait_for("back in the pane", |t| !t.contains(SIDEBAR_HINT)).await;
 
     // with two panes, focus-left from the right one reaches the left pane first
     h.send(&format!("{CTRL_A}|"));
-    h.send(&format!("{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}\x1b[D"));
     h.send("echo left$((2+3))\r");
     h.wait_text("left5").await;
     assert!(!h.text().contains(SIDEBAR_HINT));
-    h.send(&format!("{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}\x1b[D"));
     h.wait_text(SIDEBAR_HINT).await;
     // keys the sidebar does not know are swallowed instead of reaching the shell
     h.send("z");
@@ -842,7 +842,7 @@ async fn neovim_plugin_hands_over_at_its_edge() {
     let env = Env::new("nvimnav", "");
     let mut h = env.client(&[], 120, 30);
     h.wait_text("1 sh").await;
-    h.send(&format!("{CTRL_A}|{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}|{CTRL_A}\x1b[D"));
     h.send(&format!("nvim -u NORC --cmd 'set rtp+={PLUGIN_DIR}'\r"));
     h.wait_for("nvim", |t| t.matches('~').count() > 5).await;
     // 120 columns: sidebar 24, left pane 48, border, right pane from column 73
@@ -892,7 +892,7 @@ async fn neovim_plugin_commands_work_without_a_key_press() {
     let env = Env::new("nvimcmd", "");
     let mut h = env.client(&[], 120, 30);
     h.wait_text("1 sh").await;
-    h.send(&format!("{CTRL_A}|{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}|{CTRL_A}\x1b[D"));
     // headless nvim in the left pane asks dtm to move right, then exits
     h.send(&format!(
         "nvim --headless -u NORC --cmd 'set rtp+={PLUGIN_DIR}' -c DtmNavigateRight -c 'qa!'; echo DONE$((10+1))\r"
@@ -907,6 +907,31 @@ async fn neovim_plugin_commands_work_without_a_key_press() {
         "env -u DTM_PANE nvim --headless -u NORC --cmd 'set rtp+={PLUGIN_DIR}' -c DtmNavigateLeft -c 'qa!'; echo OUT$((1+1))\r"
     ));
     h.wait_text("OUT2").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn prefix_hjkl_resize_while_arrows_move_focus() {
+    let env = Env::new("prefixhjkl", "[options]\nrepeat_time = 0\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send("stty size\r");
+    h.wait_for("size", |t| last_size(t, 30).is_some()).await;
+    let start = last_size(&h.text(), 30).unwrap();
+
+    // prefix h moves the border left: the focused (right) pane grows, and keeps the focus
+    h.send(&format!("{CTRL_A}h"));
+    h.send("stty size\r");
+    h.wait_for("wider", |t| last_size(t, 30).is_some_and(|c| c > start)).await;
+    assert!(right_pane_text(&h).matches("30 ").count() >= 2, "still typing in the right pane");
+
+    // the arrow keys move focus
+    h.send(&format!("{CTRL_A}\x1b[D"));
+    h.send("echo left$((1+1))\r");
+    h.wait_text("left2").await;
+    assert!(!right_pane_text(&h).contains("left2"));
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
