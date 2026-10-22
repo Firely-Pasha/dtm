@@ -80,6 +80,14 @@ pub enum Action {
     PasteBuffer,
     FocusSidebar,
     Sidebar(SidebarCmd),
+    /// Focus the previously focused pane.
+    FocusLast,
+    /// Like `Focus`, but hand the key to an editor in the pane (which navigates
+    /// its own splits and asks dtm to move on at its edge).
+    Navigate(Dir),
+    NavigateLast,
+    /// Send the key that triggered this binding to the pane.
+    SendKey,
 }
 
 fn number<T: FromStr>(arg: Option<&str>, name: &str) -> Result<T, String> {
@@ -160,6 +168,13 @@ impl FromStr for Action {
             "copy-select" => no_arg(Action::Copy(CopyCmd::Select)),
             "copy-select-line" => no_arg(Action::Copy(CopyCmd::SelectLine)),
             "focus-sidebar" => no_arg(Action::FocusSidebar),
+            "focus-last" => no_arg(Action::FocusLast),
+            "navigate-left" => no_arg(Action::Navigate(Dir::Left)),
+            "navigate-right" => no_arg(Action::Navigate(Dir::Right)),
+            "navigate-up" => no_arg(Action::Navigate(Dir::Up)),
+            "navigate-down" => no_arg(Action::Navigate(Dir::Down)),
+            "navigate-last" => no_arg(Action::NavigateLast),
+            "send-key" => no_arg(Action::SendKey),
             "sidebar-down" => no_arg(Action::Sidebar(SidebarCmd::Down)),
             "sidebar-up" => no_arg(Action::Sidebar(SidebarCmd::Up)),
             "sidebar-open" => no_arg(Action::Sidebar(SidebarCmd::Open)),
@@ -192,6 +207,11 @@ mod tests {
         assert_eq!("paste-buffer".parse(), Ok(Action::PasteBuffer));
         assert_eq!("copy-select-line".parse(), Ok(Action::Copy(CopyCmd::SelectLine)));
         assert_eq!("focus-sidebar".parse(), Ok(Action::FocusSidebar));
+        assert_eq!("navigate-left".parse(), Ok(Action::Navigate(Dir::Left)));
+        assert_eq!("navigate-down".parse(), Ok(Action::Navigate(Dir::Down)));
+        assert_eq!("navigate-last".parse(), Ok(Action::NavigateLast));
+        assert_eq!("focus-last".parse(), Ok(Action::FocusLast));
+        assert_eq!("send-key".parse(), Ok(Action::SendKey));
         assert_eq!("sidebar-move-up".parse(), Ok(Action::Sidebar(SidebarCmd::MoveUp)));
     }
 

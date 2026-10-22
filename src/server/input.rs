@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use super::actions::Trigger;
 use super::state::ClientId;
 use super::{Event, Server};
 use crate::keys::{self, Key, KeyEvent};
@@ -52,7 +53,7 @@ impl Server {
         if let Some(prefix_raw) = c.prefix.take() {
             self.mark_dirty();
             if let Some(action) = self.cfg.prefix_keys.get(&ev.combo()).cloned() {
-                self.run_action(cid, action, Some(prefix_raw));
+                self.run_action(cid, action, Trigger { key: ev.raw.clone(), prefix: Some(prefix_raw) });
             }
             return;
         }
@@ -61,7 +62,7 @@ impl Server {
             && let Some(until) = c.resize_until {
                 if Instant::now() < until
                     && let Some(action) = self.cfg.resize_keys.get(&ev.combo()).cloned() {
-                        self.run_action(cid, action, None);
+                        self.run_action(cid, action, Trigger::key(ev.raw.clone()));
                         return;
                     }
                 if let Some(c) = self.clients.get_mut(&cid) {
@@ -74,20 +75,20 @@ impl Server {
             return;
         }
         if let Some(action) = self.cfg.root_keys.get(&ev.combo()).cloned() {
-            self.run_action(cid, action, None);
+            self.run_action(cid, action, Trigger::key(ev.raw.clone()));
             return;
         }
         if self.clients.get(&cid).is_some_and(|c| c.sidebar_focus.is_some()) {
             // The focused sidebar swallows keys it has no binding for.
             if let Some(action) = self.cfg.sidebar_keys.get(&ev.combo()).cloned() {
-                self.run_action(cid, action, None);
+                self.run_action(cid, action, Trigger::key(ev.raw.clone()));
             }
             return;
         }
         if self.active_pane_in_copy_mode(cid) {
             // Copy mode swallows keys it has no binding for.
             if let Some(action) = self.cfg.copy_keys.get(&ev.combo()).cloned() {
-                self.run_action(cid, action, None);
+                self.run_action(cid, action, Trigger::key(ev.raw.clone()));
             }
             return;
         }

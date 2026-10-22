@@ -43,6 +43,8 @@ pub struct Config {
     pub clipboard: bool,
     /// How long (ms) after a resize the plain resize keys keep working; 0 disables.
     pub repeat_time: u64,
+    /// Extra program names (besides vim, nvim, fzf, ...) that get Ctrl-h/j/k/l themselves.
+    pub navigator_apps: Vec<String>,
     pub sidebar: SidebarCfg,
     pub prefix_keys: HashMap<KeyCombo, Action>,
     pub root_keys: HashMap<KeyCombo, Action>,
@@ -68,6 +70,7 @@ struct RawOptions {
     mouse: Option<bool>,
     clipboard: Option<bool>,
     repeat_time: Option<u64>,
+    navigator_apps: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -135,6 +138,16 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("PageUp", "copy-mode"),
     ("]", "paste-buffer"),
     ("w", "focus-sidebar"),
+    (";", "focus-last"),
+    // Ctrl-l is taken by navigation; this sends it to the shell (clear screen).
+    ("C-l", "send-key"),
+];
+
+const DEFAULT_ROOT_KEYS: &[(&str, &str)] = &[
+    ("C-h", "navigate-left"),
+    ("C-j", "navigate-down"),
+    ("C-k", "navigate-up"),
+    ("C-l", "navigate-right"),
 ];
 
 const DEFAULT_RESIZE_KEYS: &[(&str, &str)] = &[
@@ -225,6 +238,7 @@ impl Default for Config {
             mouse: true,
             clipboard: true,
             repeat_time: 1000,
+            navigator_apps: Vec::new(),
             sidebar: SidebarCfg {
                 position: Position::Left,
                 width: 24,
@@ -233,7 +247,7 @@ impl Default for Config {
                 follow: true,
             },
             prefix_keys: default_table(DEFAULT_PREFIX_KEYS),
-            root_keys: HashMap::new(),
+            root_keys: default_table(DEFAULT_ROOT_KEYS),
             copy_keys: default_table(DEFAULT_COPY_KEYS),
             resize_keys: default_table(DEFAULT_RESIZE_KEYS),
             sidebar_keys: default_sidebar_keys(Position::Left),
@@ -279,6 +293,9 @@ impl Config {
         }
         if let Some(t) = raw.options.repeat_time {
             cfg.repeat_time = t;
+        }
+        if let Some(a) = raw.options.navigator_apps {
+            cfg.navigator_apps = a;
         }
         let sb = &mut cfg.sidebar;
         if let Some(v) = raw.sidebar.position {
@@ -436,6 +453,37 @@ mod tests {
         assert_eq!(c.sidebar_keys[&(Key::Char('h'), 0)], Action::Sidebar(SidebarCmd::Leave));
         assert!(!c.sidebar_keys.contains_key(&(Key::Char('l'), 0)));
         assert!(Config::from_toml("[keys.sidebar]\n\"x\" = \"bogus\"").is_err());
+    }
+
+    #[test]
+    fn ctrl_hjkl_navigation_defaults() {
+        use crate::keys::CTRL;
+        let d = Config::default();
+        assert_eq!(d.root_keys[&(Key::Char('h'), CTRL)], Action::Navigate(Dir::Left));
+        assert_eq!(d.root_keys[&(Key::Char('j'), CTRL)], Action::Navigate(Dir::Down));
+        assert_eq!(d.root_keys[&(Key::Char('k'), CTRL)], Action::Navigate(Dir::Up));
+        assert_eq!(d.root_keys[&(Key::Char('l'), CTRL)], Action::Navigate(Dir::Right));
+        // the shell's own Ctrl-l (clear screen) stays reachable through the prefix
+        assert_eq!(d.prefix_keys[&(Key::Char('l'), CTRL)], Action::SendKey);
+        assert_eq!(d.prefix_keys[&(Key::Char(';'), 0)], Action::FocusLast);
+        assert!(d.navigator_apps.is_empty());
+
+        let c = Config::from_toml(
+            r#"
+            [options]
+            navigator_apps = ["hx"]
+            [keys.root]
+            "C-h" = "none"
+            "C-\\" = "navigate-last"
+            "M-h" = "navigate-left"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(c.navigator_apps, vec!["hx".to_string()]);
+        assert!(!c.root_keys.contains_key(&(Key::Char('h'), CTRL)));
+        assert_eq!(c.root_keys[&(Key::Char('\\'), CTRL)], Action::NavigateLast);
+        assert_eq!(c.root_keys[&(Key::Char('h'), ALT)], Action::Navigate(Dir::Left));
+        assert_eq!(c.root_keys[&(Key::Char('l'), CTRL)], Action::Navigate(Dir::Right));
     }
 
     #[test]

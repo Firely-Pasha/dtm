@@ -4,6 +4,7 @@ pub mod config;
 pub mod debug;
 pub mod keys;
 pub mod paths;
+pub mod procinfo;
 pub mod protocol;
 pub mod pty;
 pub mod server;

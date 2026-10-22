@@ -12,6 +12,9 @@ history_limit = 10000   # scrollback lines kept per pane
 mouse = true            # sidebar clicks, pane focus, wheel scrolling
                         # (hold Shift to select text with the terminal itself)
 clipboard = true        # copy-mode yanks also go to the terminal clipboard (OSC 52)
+# Programs (besides vim, nvim, view, fzf, ...) that get Ctrl-h/j/k/l themselves instead of
+# dtm moving pane focus. See "Navigating with Ctrl-h/j/k/l" in the README.
+navigator_apps = []
 repeat_time = 1000      # ms after a resize during which plain h/j/k/l (see [keys.resize])
                         # keep resizing, so you don't need the prefix every time; 0 = off
 
@@ -53,21 +56,25 @@ follow = true           # moving the selection in the focused sidebar shows that
 "[" = "copy-mode"
 "PageUp" = "copy-mode"
 "]" = "paste-buffer"
+";" = "focus-last"            # the previously focused pane
+"C-l" = "send-key"            # sends a real Ctrl-l (clear screen) to the pane
 "w" = "focus-sidebar"         # also: focus-left from the leftmost pane reaches a left sidebar
 "d" = "detach"
 "a" = "send-prefix"           # <prefix> a sends a literal prefix key
 "r" = "reload-config"
 
-# Keys that work without the prefix, e.g.:
+# Keys that work without the prefix.
 [keys.root]
+# navigate-* moves between panes and on into the sidebar; when an editor such
+# as Neovim is in the foreground it gets the key instead (see contrib/nvim).
+"C-h" = "navigate-left"
+"C-j" = "navigate-down"
+"C-k" = "navigate-up"
+"C-l" = "navigate-right"
+# "C-\\" = "navigate-last"   # previous pane (not bound by default: it is SIGQUIT)
 # "M-n" = "next-window"
 # "M-p" = "prev-window"
 # "M-1" = "select-window 1"
-# Ctrl-h/j/k/l to move between panes and into/out of the sidebar:
-# "C-h" = "focus-left"
-# "C-j" = "focus-down"
-# "C-k" = "focus-up"
-# "C-l" = "focus-right"
 
 # Keys accepted without the prefix for `repeat_time` after a resize.
 [keys.resize]

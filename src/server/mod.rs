@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod copy;
 pub mod input;
+pub mod ipc;
 pub mod mouse;
 pub mod layout;
 pub mod render;
@@ -52,6 +53,9 @@ pub struct Server {
     pub panes: HashMap<PaneId, Pane>,
     pub clients: BTreeMap<ClientId, Client>,
     pub events: UnboundedSender<Event>,
+    /// Exported to panes so the `dtm` CLI and editor plugins find the server.
+    pub socket: PathBuf,
+    pub exe: String,
     pub render_at: Option<Instant>,
     pub shutdown: bool,
     /// Text from the last copy-mode yank.
@@ -84,7 +88,7 @@ pub async fn run(socket: PathBuf, cfg: Config, cfg_path: Option<PathBuf>) -> Res
         }
     });
 
-    let mut server = Server::new(cfg, cfg_path, tx);
+    let mut server = Server::new(cfg, cfg_path, socket.clone(), tx);
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         let at = server.render_at;
@@ -142,7 +146,7 @@ async fn connection(id: ClientId, stream: UnixStream, events: UnboundedSender<Ev
 }
 
 impl Server {
-    pub fn new(cfg: Config, cfg_path: Option<PathBuf>, events: UnboundedSender<Event>) -> Server {
+    pub fn new(cfg: Config, cfg_path: Option<PathBuf>, socket: PathBuf, events: UnboundedSender<Event>) -> Server {
         Server {
             cfg,
             cfg_path,
@@ -150,6 +154,8 @@ impl Server {
             panes: HashMap::new(),
             clients: BTreeMap::new(),
             events,
+            socket,
+            exe: std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "dtm".into()),
             render_at: None,
             shutdown: false,
             paste_text: String::new(),
@@ -229,6 +235,14 @@ impl Server {
             }
             ClientMsg::Reload => match self.reload() {
                 Ok(()) => self.send(cid, ServerMsg::Ok),
+                Err(e) => self.send(cid, ServerMsg::Error(e)),
+            },
+            ClientMsg::SelectPane { pane, dir } => match self.select_pane_ipc(pane, dir) {
+                Ok(()) => self.send(cid, ServerMsg::Ok),
+                Err(e) => self.send(cid, ServerMsg::Error(e)),
+            },
+            ClientMsg::Query { pane, format } => match self.query_ipc(pane, &format) {
+                Ok(text) => self.send(cid, ServerMsg::Text(text)),
                 Err(e) => self.send(cid, ServerMsg::Error(e)),
             },
         }

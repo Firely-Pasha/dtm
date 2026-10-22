@@ -17,6 +17,7 @@ dtm new -s work                # new named session
 dtm attach -t work             # attach to an existing session
 dtm ls                         # list sessions
 dtm reload                     # re-read the config file
+dtm select-pane -R             # move pane focus (used by editor plugins, see below)
 dtm kill-server                # end the server and every session
 ```
 
@@ -35,7 +36,11 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `S` | new session | `$` | rename session |
 | `(` / `)` | previous / next session | `b` | show / hide sidebar |
 | `s` | sidebar: windows ↔ sessions | `d` | detach |
-| `w` | focus the sidebar | | |
+| `w` | focus the sidebar | `;` | previously focused pane |
+| `Ctrl-l` | send a literal Ctrl-l | | |
+
+Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
+(see below).
 | `[` or `PageUp` | copy mode | `]` | paste |
 | `a` | send a literal Ctrl-a | `r` | reload config |
 
@@ -52,6 +57,47 @@ kept in dtm's paste buffer and also sent to the terminal clipboard (OSC 52).
 focus it, scroll the wheel to enter copy mode (or scroll full-screen apps).
 Applications that request mouse reporting receive the events. Hold Shift to
 select text with the terminal itself, or set `mouse = false`.
+
+## Navigating with Ctrl-h/j/k/l
+
+`Ctrl-h/j/k/l` move focus left/down/up/right, continuing into the sidebar at the
+edge (and back out again). They are root bindings, so change them in
+`[keys.root]` (`navigate-left|right|up|down`, `navigate-last`), or remove one with
+`"C-h" = "none"`. Because they replace the shell's own `Ctrl-l` (clear screen) and
+friends, `<prefix> Ctrl-l` sends a real `Ctrl-l`; `send-key` does that for any
+binding. (A terminal that sends `Ctrl-h` for Backspace will lose Backspace; most
+send `0x7f`.)
+
+If an editor is in the foreground of the active pane, dtm hands the key to it
+instead. That is the same idea as vim-tmux-navigator: the editor moves between its
+own windows and, when it is already at the edge, asks dtm to move pane focus. The
+editor is recognised by process name: `vim`, `nvim`, `view`, `vimdiff`, `fzf`
+(including Nix's `.nvim-wrapped`), plus anything listed in
+`options.navigator_apps`.
+
+### Neovim plugin
+
+[contrib/nvim](contrib/nvim) is a small Lua plugin with the same mappings, commands
+and options as vim-tmux-navigator, talking to dtm instead of tmux
+(vim-tmux-navigator itself only works with tmux). With lazy.nvim:
+
+```lua
+{ dir = "/path/to/dtm/contrib/nvim", name = "dtm-navigator" }
+```
+
+or add it to the runtimepath: `set rtp+=/path/to/dtm/contrib/nvim`. See
+[contrib/nvim/README.md](contrib/nvim/README.md) for the options. It does nothing
+special outside dtm. Classic Vim is not supported (the plugin is Lua).
+
+### What dtm exports to panes
+
+Every pane gets `DTM_PANE` (its id), `DTM_SOCKET` (so the `dtm` CLI reaches the
+right server) and `DTM_BIN` (the dtm executable). Two commands use them:
+
+```
+dtm select-pane [-t PANE] -L|-R|-U|-D|-l    # move focus (-l: previously focused pane)
+dtm query [-t PANE] '#{window_zoomed_flag}'  # also pane_at_left/right/top/bottom, pane_id, pane_active
+```
 
 ## Sidebar
 
@@ -90,7 +136,8 @@ checked by the test suite to match the built-in defaults.
   `kill-pane`, `zoom-pane`, `new-session`, `next-session`, `prev-session`,
   `select-session N`, `rename-session`, `toggle-sidebar`,
   `toggle-sidebar-mode`, `copy-mode`, `paste-buffer`, `detach`, `send-prefix`,
-  `reload-config`, and in copy mode `copy-up|down|left|right`,
+  `reload-config`, `focus-last`, `navigate-left|right|up|down`, `navigate-last`,
+  `send-key` (sends the key that triggered the binding), and in copy mode `copy-up|down|left|right`,
   `copy-page-up|down`, `copy-half-page-up|down`, `copy-top|bottom`,
   `copy-line-start|end`, `copy-select`, `copy-select-line`, `copy-yank`,
   `copy-cancel`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|leave`.
@@ -123,7 +170,8 @@ dtm (client) ──unix socket, length-prefixed bincode──► dtm server
 ```
 src/term/     parser.rs (VT500 state machine), screen.rs (emulator), canvas.rs (frame + differ)
 src/server/   layout.rs, render.rs, sidebar.rs, copy.rs, mouse.rs, input.rs, actions.rs
-src/          keys.rs, action.rs, config.rs, protocol.rs, pty.rs, client.rs
+src/          keys.rs, action.rs, config.rs, protocol.rs, pty.rs, client.rs, procinfo.rs
+contrib/nvim/ Neovim plugin for Ctrl-h/j/k/l navigation
 ```
 
 ## Tests

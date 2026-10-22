@@ -13,14 +13,37 @@ use crate::protocol::ServerMsg;
 use crate::pty::{Pty, SpawnOpts};
 use crate::term::screen::Screen;
 
+/// The key press that fired a binding.
+pub struct Trigger {
+    /// Raw bytes of the key itself.
+    pub key: Vec<u8>,
+    /// Raw bytes of the prefix key, when the binding came from the prefix table.
+    pub prefix: Option<Vec<u8>>,
+}
+
+impl Trigger {
+    pub fn key(key: Vec<u8>) -> Trigger {
+        Trigger { key, prefix: None }
+    }
+}
+
 impl Server {
     // ---- creation ----
+
+    /// Variables that let programs in a pane (and editor plugins) reach this server.
+    fn pane_env(&self, id: PaneId) -> Vec<(String, String)> {
+        vec![
+            ("DTM_PANE".into(), id.to_string()),
+            ("DTM_SOCKET".into(), self.socket.display().to_string()),
+            ("DTM_BIN".into(), self.exe.clone()),
+        ]
+    }
 
     pub fn spawn_pane(&mut self, id: PaneId, cwd: Option<PathBuf>, size: (u16, u16)) -> Result<(), String> {
         let (cols, rows) = (size.0.max(1), size.1.max(1));
         let tx = self.events.clone();
         let pty = Pty::spawn(
-            SpawnOpts { shell: self.cfg.shell.clone(), args: vec![], env: vec![], cwd, cols, rows },
+            SpawnOpts { shell: self.cfg.shell.clone(), args: vec![], env: self.pane_env(id), cwd, cols, rows },
             move |ev| {
                 let _ = tx.send(Event::Pane { id, ev });
             },
@@ -40,6 +63,7 @@ impl Server {
             auto_name: String::new(),
             root: Node::Leaf(pane),
             active: pane,
+            last: None,
             zoomed: false,
             activity: false,
             bell: false,
@@ -116,7 +140,7 @@ impl Server {
         self.spawn_pane(new_id, cwd, (r.w, r.h))?;
         let w = self.sessions[si].active_window_mut();
         w.root = tree;
-        w.active = new_id;
+        w.focus(new_id);
         w.zoomed = false;
         let wi = self.sessions[si].active;
         self.refresh_name(si, wi);
@@ -158,6 +182,9 @@ impl Server {
         match root.remove(pid) {
             (Some(root), focus) => {
                 w.root = root;
+                if w.last == Some(pid) {
+                    w.last = None;
+                }
                 if w.active == pid {
                     w.active = focus.unwrap_or_else(|| w.root.first_leaf());
                 }
@@ -191,7 +218,7 @@ impl Server {
         self.mark_dirty();
     }
 
-    fn locate_pane(&self, pane: PaneId) -> Option<(usize, usize)> {
+    pub fn locate_pane(&self, pane: PaneId) -> Option<(usize, usize)> {
         self.sessions.iter().enumerate().find_map(|(si, s)| {
             s.windows.iter().position(|w| w.root.contains(pane)).map(|wi| (si, wi))
         })
@@ -225,7 +252,7 @@ impl Server {
 
     // ---- key actions ----
 
-    pub fn run_action(&mut self, cid: ClientId, action: Action, prefix_raw: Option<Vec<u8>>) {
+    pub fn run_action(&mut self, cid: ClientId, action: Action, trigger: Trigger) {
         let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
         let Some(si) = self.session_index(sid) else { return };
         let result: Result<(), String> = match action {
@@ -332,7 +359,7 @@ impl Server {
                 return;
             }
             Action::SendPrefix => {
-                if let (Some(raw), Some(p)) = (prefix_raw, self.panes.get(&self.sessions[si].active_window().active)) {
+                if let (Some(raw), Some(p)) = (trigger.prefix, self.panes.get(&self.sessions[si].active_window().active)) {
                     p.pty.write(raw);
                 }
                 Ok(())
@@ -346,6 +373,22 @@ impl Server {
             }
             Action::Copy(cmd) => {
                 self.copy_command(cid, si, cmd);
+                Ok(())
+            }
+            Action::FocusLast => {
+                self.focus_last(si);
+                Ok(())
+            }
+            Action::Navigate(dir) => {
+                self.navigate(cid, si, Some(dir), trigger.key);
+                Ok(())
+            }
+            Action::NavigateLast => {
+                self.navigate(cid, si, None, trigger.key);
+                Ok(())
+            }
+            Action::SendKey => {
+                self.write_active(si, trigger.key);
                 Ok(())
             }
             Action::FocusSidebar => self.enter_sidebar(cid),
@@ -423,40 +466,55 @@ impl Server {
         self.switch_client(cid, id);
     }
 
-    fn unzoom(&mut self, si: usize) {
+    fn unzoom_window(&mut self, si: usize, wi: usize) {
         let sid = self.sessions[si].id;
-        let w = self.sessions[si].active_window_mut();
+        let w = &mut self.sessions[si].windows[wi];
         if w.zoomed {
             w.zoomed = false;
             self.relayout(sid);
         }
     }
 
-    /// Move pane focus; false when there is no pane in that direction.
-    fn focus_dir(&mut self, si: usize, dir: Dir) -> bool {
-        self.unzoom(si);
+    fn unzoom(&mut self, si: usize) {
+        let wi = self.sessions[si].active;
+        self.unzoom_window(si, wi);
+    }
+
+    /// Move focus from `origin` in window `wi`; false when there is no pane in that direction.
+    pub fn focus_dir_from(&mut self, si: usize, wi: usize, origin: PaneId, dir: Dir) -> bool {
+        self.unzoom_window(si, wi);
         let s = &mut self.sessions[si];
         let size = s.size;
-        let w = s.active_window_mut();
+        let w = &mut s.windows[wi];
         let rects = w.rects(size);
-        let moved = match neighbor(&rects, w.active, dir) {
+        let moved = match neighbor(&rects, origin, dir) {
             Some(n) => {
-                w.active = n;
+                w.focus(n);
                 true
             }
             None => false,
         };
-        let wi = self.sessions[si].active;
         self.refresh_name(si, wi);
         moved
     }
 
-    /// Directional focus: panes first, then on into the sidebar; and back out of it.
-    fn focus_command(&mut self, cid: ClientId, si: usize, dir: Dir) {
-        let toward_sidebar = matches!(
+    fn focus_dir(&mut self, si: usize, dir: Dir) -> bool {
+        let wi = self.sessions[si].active;
+        let origin = self.sessions[si].windows[wi].active;
+        self.focus_dir_from(si, wi, origin, dir)
+    }
+
+    /// Is the sidebar on the side `dir` points to?
+    pub fn toward_sidebar(&self, dir: Dir) -> bool {
+        matches!(
             (self.cfg.sidebar.position, dir),
             (Position::Left, Dir::Left) | (Position::Right, Dir::Right)
-        );
+        )
+    }
+
+    /// Directional focus: panes first, then on into the sidebar; and back out of it.
+    fn focus_command(&mut self, cid: ClientId, si: usize, dir: Dir) {
+        let toward_sidebar = self.toward_sidebar(dir);
         if self.clients.get(&cid).is_some_and(|c| c.sidebar_focus.is_some()) {
             let cmd = match dir {
                 Dir::Up => Some(SidebarCmd::Up),
@@ -474,12 +532,60 @@ impl Server {
         }
     }
 
+    /// Focus the previously focused pane of the window.
+    pub fn focus_last_in(&mut self, si: usize, wi: usize) {
+        self.unzoom_window(si, wi);
+        let w = &mut self.sessions[si].windows[wi];
+        if let Some(l) = w.last.filter(|l| w.root.contains(*l)) {
+            w.focus(l);
+        }
+        self.refresh_name(si, wi);
+    }
+
+    fn focus_last(&mut self, si: usize) {
+        let wi = self.sessions[si].active;
+        self.focus_last_in(si, wi);
+    }
+
+    fn write_active(&mut self, si: usize, data: Vec<u8>) {
+        let active = self.sessions[si].active_window().active;
+        if let Some(p) = self.panes.get(&active) {
+            p.pty.write(data);
+        }
+    }
+
+    /// Is an editor (one that does its own Ctrl-h/j/k/l navigation) in the pane's foreground?
+    fn active_pane_runs_editor(&self, si: usize) -> bool {
+        let active = self.sessions[si].active_window().active;
+        self.panes.get(&active).is_some_and(|p| {
+            p.copy.is_none()
+                && p.pty
+                    .foreground_commands()
+                    .iter()
+                    .any(|c| crate::procinfo::is_editor(c, &self.cfg.navigator_apps))
+        })
+    }
+
+    /// Ctrl-h/j/k/l: give the key to an editor if one is running, else move focus.
+    fn navigate(&mut self, cid: ClientId, si: usize, dir: Option<Dir>, key: Vec<u8>) {
+        let sidebar_focused = self.clients.get(&cid).is_some_and(|c| c.sidebar_focus.is_some());
+        if !sidebar_focused && self.active_pane_runs_editor(si) {
+            self.write_active(si, key);
+            return;
+        }
+        match dir {
+            Some(d) => self.focus_command(cid, si, d),
+            None if !sidebar_focused => self.focus_last(si),
+            None => {}
+        }
+    }
+
     fn focus_next(&mut self, si: usize) {
         self.unzoom(si);
         let w = self.sessions[si].active_window_mut();
         let leaves = w.root.leaves();
         if let Some(i) = leaves.iter().position(|&p| p == w.active) {
-            w.active = leaves[(i + 1) % leaves.len()];
+            w.focus(leaves[(i + 1) % leaves.len()]);
         }
         let wi = self.sessions[si].active;
         self.refresh_name(si, wi);

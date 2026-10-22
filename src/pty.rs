@@ -143,6 +143,14 @@ impl Pty {
         self.foreground_pgrp().and_then(from).or_else(|| from(self.pid as i32))
     }
 
+    /// Command names of the live processes in the pane's foreground process group.
+    pub fn foreground_commands(&self) -> Vec<String> {
+        match self.foreground_pgrp() {
+            Some(pg) => crate::procinfo::group_commands(pg),
+            None => Vec::new(),
+        }
+    }
+
     /// Name of the foreground process.
     pub fn process_name(&self) -> Option<String> {
         let pg = self.foreground_pgrp().unwrap_or(self.pid as i32);

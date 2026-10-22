@@ -90,6 +90,22 @@ impl Harness {
         }
     }
 
+    /// Wait until the terminal cursor (which follows the focused pane) satisfies `pred(x, y)`.
+    pub async fn wait_cursor(&mut self, what: &str, pred: impl Fn(usize, usize) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let (x, y) = self.screen.cursor_pos();
+            if pred(x, y) {
+                return;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for cursor: {what}; screen:\n{}", self.text());
+            if let Ok(Some(PtyEvent::Output(d))) = tokio::time::timeout(left, self.rx.recv()).await {
+                self.screen.feed(&d);
+            }
+        }
+    }
+
     pub async fn wait_text(&mut self, needle: &str) {
         let n = needle.to_string();
         self.wait_for(&format!("{needle:?}"), move |t| t.contains(&n)).await;

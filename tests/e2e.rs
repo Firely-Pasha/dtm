@@ -44,7 +44,7 @@ impl Env {
 
     fn run(&self, args: &[&str]) -> (bool, String) {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_dtm"));
-        cmd.args(args);
+        cmd.args(args).env_remove("DTM_PANE");
         for (k, v) in self.vars() {
             cmd.env(k, v);
         }
@@ -704,6 +704,209 @@ async fn sidebar_follow_can_be_turned_off() {
     assert!(h.text().contains("two2") && !h.text().contains("one1"));
     h.send("\r");
     h.wait_text("one1").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+/// The text of the last pane column: everything after the last vertical line on each row.
+fn right_pane_text(h: &Harness) -> String {
+    h.text().lines().map(|l| l.rsplit('│').next().unwrap_or("")).collect::<Vec<_>>().join("\n")
+}
+
+#[tokio::test]
+async fn panes_get_their_dtm_environment_and_cli() {
+    let env = Env::new("paneenv", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("echo ENV:$DTM_PANE:$(basename \"$DTM_SOCKET\"):$($DTM_BIN query '#{window_zoomed_flag}#{pane_at_left}#{pane_at_right}')\r");
+    h.wait_text("ENV:1:s.sock:011").await;
+
+    h.send(&format!("{CTRL_A}|"));
+    h.send("echo P:$DTM_PANE:$($DTM_BIN query '#{pane_at_left}#{pane_at_right}#{pane_id}')\r");
+    h.wait_text("P:2:012").await;
+    // the pane can move focus with the CLI, as an editor plugin does
+    h.send("$DTM_BIN select-pane -L; echo SYNC$((10+1))\r");
+    h.wait_text("SYNC11").await;
+    h.send("echo LEFT$((1+1))\r");
+    h.wait_text("LEFT2").await;
+    assert!(!right_pane_text(&h).contains("LEFT2"), "typed into the left pane:\n{}", h.text());
+    // and an explicit target works from anywhere
+    h.send("$DTM_BIN select-pane -t 1 -R; echo SYNC$((10+2))\r");
+    h.wait_text("SYNC12").await;
+    h.send("echo RIGHT$((1+2))\r");
+    h.wait_text("RIGHT3").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+
+    let (ok, out) = env.run(&["select-pane", "-L"]);
+    assert!(!ok && out.contains("not inside a dtm pane"), "{out}");
+    let (ok, out) = env.run(&["query", "-t", "99", "#{pane_id}"]);
+    assert!(!ok && out.contains("no such pane"), "{out}");
+}
+
+#[tokio::test]
+async fn ctrl_hjkl_move_between_panes_and_into_the_sidebar() {
+    let env = Env::new("ctrlnav", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send("\x08");
+    h.send("echo L$((1+1))\r");
+    h.wait_text("L2").await;
+    assert!(!right_pane_text(&h).contains("L2"), "Ctrl-h went to the left pane");
+    h.send("\x0c");
+    h.send("echo R$((1+2))\r");
+    h.wait_text("R3").await;
+    assert!(right_pane_text(&h).contains("R3"), "Ctrl-l went back to the right pane");
+
+    // Ctrl-h twice: left pane, then the sidebar; Ctrl-l comes back out
+    h.send("\x08\x08");
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\x0c");
+    h.wait_for("left sidebar", |t| !t.contains(SIDEBAR_HINT)).await;
+
+    // vertical: Ctrl-k / Ctrl-j between stacked panes
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send(&format!("{CTRL_A}-"));
+    h.send("\x0b");
+    h.send("echo UP$((2+2))\r");
+    h.wait_text("UP4").await;
+    h.send("\x0a");
+    h.send("echo DOWN$((2+3))\r");
+    h.wait_text("DOWN5").await;
+    let text = h.text();
+    let row = |needle: &str| text.lines().position(|l| l.contains(needle)).unwrap();
+    assert!(row("UP4") < row("DOWN5"), "{text}");
+
+    // <prefix> Ctrl-l sends a real Ctrl-l to the pane
+    h.send("cat -v\r");
+    h.send(&format!("{CTRL_A}\x0c\r"));
+    h.wait_text("^L").await;
+    h.send("\x03");
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn focus_last_toggles_between_two_panes() {
+    let env = Env::new("focuslast", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send(&format!("{CTRL_A};"));
+    h.send("echo A$((1+1))\r");
+    h.wait_text("A2").await;
+    assert!(!right_pane_text(&h).contains("A2"));
+    h.send(&format!("{CTRL_A};"));
+    h.send("echo B$((1+2))\r");
+    h.wait_text("B3").await;
+    assert!(right_pane_text(&h).contains("B3"));
+    h.send("$DTM_BIN select-pane -l; echo SYNC$((10+3))\r");
+    h.wait_text("SYNC13").await;
+    h.send("echo C$((2+2))\r");
+    h.wait_text("C4").await;
+    assert!(!right_pane_text(&h).contains("C4"));
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn zoom_is_visible_to_queries() {
+    let env = Env::new("zoomq", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|{CTRL_A}z"));
+    h.send("echo Z=$($DTM_BIN query '#{window_zoomed_flag}')\r");
+    h.wait_text("Z=1").await;
+    // moving focus from a zoomed pane unzooms the window
+    h.send("$DTM_BIN select-pane -L; echo SYNC$((10+4))\r");
+    h.wait_text("SYNC14").await;
+    h.send("echo Z=$($DTM_BIN query '#{window_zoomed_flag}')\r");
+    h.wait_text("Z=0").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+fn has_nvim() -> bool {
+    Command::new("nvim").arg("--version").output().is_ok()
+}
+
+const PLUGIN_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/nvim");
+
+#[tokio::test]
+async fn neovim_plugin_hands_over_at_its_edge() {
+    if !has_nvim() {
+        return;
+    }
+    let env = Env::new("nvimnav", "");
+    let mut h = env.client(&[], 120, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|{CTRL_A}h"));
+    h.send(&format!("nvim -u NORC --cmd 'set rtp+={PLUGIN_DIR}'\r"));
+    h.wait_for("nvim", |t| t.matches('~').count() > 5).await;
+    // 120 columns: sidebar 24, left pane 48, border, right pane from column 73
+    const RIGHT: usize = 73;
+
+    // Ctrl-l reaches nvim (it is in the foreground); nvim has no window to the
+    // right and so asks dtm: focus moves to the right-hand shell pane.
+    h.send("\x0c");
+    h.wait_cursor("right pane", |x, _| x >= RIGHT).await;
+    h.send("echo R$((1+1))\r");
+    h.wait_text("R2").await;
+    assert!(right_pane_text(&h).contains("R2"));
+
+    // Ctrl-h from a plain shell pane is handled by dtm directly
+    h.send("\x08");
+    h.wait_cursor("left pane", |x, _| x < RIGHT).await;
+    // inside nvim: split, then Ctrl-l moves between nvim's windows only
+    h.send(":vsplit\r");
+    h.wait_for("split", |t| t.lines().filter(|l| l.matches('│').count() >= 3).count() > 10).await;
+    h.send("\x0c");
+    h.send("ihere\x1b");
+    h.wait_text("here").await;
+    h.wait_cursor("still in nvim", |x, _| x < RIGHT).await;
+    assert!(!right_pane_text(&h).contains("here"), "stayed in nvim's right window");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // now at nvim's right edge: the next Ctrl-l crosses into the dtm pane
+    h.send("\x0c");
+    h.wait_cursor("right pane again", |x, _| x >= RIGHT).await;
+    h.send("echo R$((2+3))\r");
+    h.wait_text("R5").await;
+    assert!(right_pane_text(&h).contains("R5"));
+
+    // back to nvim and quit it
+    h.send("\x08");
+    h.wait_cursor("left pane again", |x, _| x < RIGHT).await;
+    h.send(":qa!\r");
+    h.wait_for("nvim closed", |t| !t.contains("here")).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn neovim_plugin_commands_work_without_a_key_press() {
+    if !has_nvim() {
+        return;
+    }
+    let env = Env::new("nvimcmd", "");
+    let mut h = env.client(&[], 120, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|{CTRL_A}h"));
+    // headless nvim in the left pane asks dtm to move right, then exits
+    h.send(&format!(
+        "nvim --headless -u NORC --cmd 'set rtp+={PLUGIN_DIR}' -c DtmNavigateRight -c 'qa!'; echo DONE$((10+1))\r"
+    ));
+    h.wait_text("DONE11").await;
+    h.wait_cursor("right pane", |x, _| x >= 73).await;
+    h.send("echo H$((4+4))\r");
+    h.wait_text("H8").await;
+    assert!(right_pane_text(&h).contains("H8"), "{}", h.text());
+    // the plugin does nothing harmful outside dtm
+    h.send(&format!(
+        "env -u DTM_PANE nvim --headless -u NORC --cmd 'set rtp+={PLUGIN_DIR}' -c DtmNavigateLeft -c 'qa!'; echo OUT$((1+1))\r"
+    ));
+    h.wait_text("OUT2").await;
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use dtm::protocol::AttachMode;
+use dtm::protocol::{AttachMode, PaneDir};
 use dtm::{client, config::Config, paths, server};
 
 #[derive(Parser)]
@@ -30,6 +30,29 @@ enum Cmd {
     KillServer,
     /// Re-read the configuration file.
     Reload,
+    /// Move pane focus (for editor plugins): relative to the pane given by -t or $DTM_PANE.
+    SelectPane {
+        /// Pane id (default: $DTM_PANE).
+        #[arg(short = 't', long)]
+        target: Option<u32>,
+        #[arg(short = 'L', conflicts_with_all = ["right", "up", "down", "last"])]
+        left: bool,
+        #[arg(short = 'R', conflicts_with_all = ["up", "down", "last"])]
+        right: bool,
+        #[arg(short = 'U', conflicts_with_all = ["down", "last"])]
+        up: bool,
+        #[arg(short = 'D', conflicts_with = "last")]
+        down: bool,
+        /// The previously focused pane.
+        #[arg(short = 'l')]
+        last: bool,
+    },
+    /// Print a format such as '#{window_zoomed_flag}' or '#{pane_at_left}' for a pane.
+    Query {
+        #[arg(short = 't', long)]
+        target: Option<u32>,
+        format: String,
+    },
     #[command(hide = true)]
     Server,
     /// Run one local shell through the emulator (no server).
@@ -78,6 +101,21 @@ async fn real_main(cli: Cli) -> Result<()> {
         Some(Cmd::Reload) => {
             client::reload().await?;
             println!("config reloaded");
+            Ok(())
+        }
+        Some(Cmd::SelectPane { target, left, right, up, down, last }) => {
+            let dir = match (left, right, up, down, last) {
+                (true, ..) => PaneDir::Left,
+                (_, true, ..) => PaneDir::Right,
+                (_, _, true, ..) => PaneDir::Up,
+                (_, _, _, true, _) => PaneDir::Down,
+                (.., true) => PaneDir::Last,
+                _ => anyhow::bail!("select-pane needs one of -L -R -U -D -l"),
+            };
+            client::select_pane(target, dir).await
+        }
+        Some(Cmd::Query { target, format }) => {
+            println!("{}", client::query(target, format).await?);
             Ok(())
         }
         Some(Cmd::Server) => run_server().await,

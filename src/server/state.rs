@@ -42,12 +42,22 @@ pub struct Window {
     pub auto_name: String,
     pub root: Node,
     pub active: PaneId,
+    /// The pane that was focused before `active`.
+    pub last: Option<PaneId>,
     pub zoomed: bool,
     pub activity: bool,
     pub bell: bool,
 }
 
 impl Window {
+    /// Focus `pane`, remembering the previous one for `focus-last`.
+    pub fn focus(&mut self, pane: PaneId) {
+        if pane != self.active {
+            self.last = Some(self.active);
+            self.active = pane;
+        }
+    }
+
     pub fn name(&self) -> &str {
         self.pinned_name.as_deref().unwrap_or(&self.auto_name)
     }
@@ -151,5 +161,37 @@ impl Client {
 
     pub fn send(&self, msg: ServerMsg) {
         let _ = self.tx.send(msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window() -> Window {
+        Window {
+            id: 1,
+            pinned_name: None,
+            auto_name: String::new(),
+            root: Node::Leaf(1),
+            active: 1,
+            last: None,
+            zoomed: false,
+            activity: false,
+            bell: false,
+        }
+    }
+
+    #[test]
+    fn focus_remembers_the_previous_pane() {
+        let mut w = window();
+        w.focus(1);
+        assert_eq!(w.last, None, "focusing the active pane changes nothing");
+        w.focus(2);
+        assert_eq!((w.active, w.last), (2, Some(1)));
+        w.focus(3);
+        assert_eq!((w.active, w.last), (3, Some(2)));
+        w.focus(2);
+        assert_eq!((w.active, w.last), (2, Some(3)));
     }
 }

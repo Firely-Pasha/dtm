@@ -168,6 +168,7 @@ mod tests {
             auto_name: "w".into(),
             root,
             active,
+            last: None,
             zoomed: false,
             activity: false,
             bell: false,

@@ -18,6 +18,17 @@ pub enum AttachMode {
     Existing,
 }
 
+/// Where `select-pane` should move focus.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneDir {
+    Left,
+    Right,
+    Up,
+    Down,
+    /// The previously focused pane.
+    Last,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientMsg {
     Attach { mode: AttachMode, name: Option<String>, cols: u16, rows: u16, cwd: PathBuf },
@@ -27,6 +38,10 @@ pub enum ClientMsg {
     List,
     KillServer,
     Reload,
+    /// Move focus relative to `pane` (used by editor plugins).
+    SelectPane { pane: u32, dir: PaneDir },
+    /// Expand a `#{...}` format for `pane`.
+    Query { pane: u32, format: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -43,6 +58,7 @@ pub enum ServerMsg {
     Exited,
     Error(String),
     Sessions(Vec<SessionInfo>),
+    Text(String),
     Ok,
 }
 

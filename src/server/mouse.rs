@@ -68,7 +68,7 @@ impl Server {
         let Some((pane_id, r)) = hit else { return };
         let (rx, ry) = (cx - r.x as usize, cy - r.y as usize);
         if m.kind == MouseKind::Press && self.sessions[si].active_window().active != pane_id {
-            self.sessions[si].active_window_mut().active = pane_id;
+            self.sessions[si].active_window_mut().focus(pane_id);
             let wi = self.sessions[si].active;
             self.refresh_name(si, wi);
         }

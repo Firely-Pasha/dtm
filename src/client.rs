@@ -12,7 +12,7 @@ use tokio::net::UnixStream;
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::config::Config;
-use crate::protocol::{decode, encode, framed, AttachMode, ClientMsg, Conn, ServerMsg, SessionInfo};
+use crate::protocol::{decode, encode, framed, AttachMode, ClientMsg, Conn, PaneDir, ServerMsg, SessionInfo};
 use crate::{paths, tty};
 
 /// Enter the alternate screen and disable autowrap (the server relies on it).
@@ -83,6 +83,35 @@ pub async fn reload() -> Result<()> {
     match request(ClientMsg::Reload).await? {
         ServerMsg::Ok => Ok(()),
         ServerMsg::Error(e) => bail!("config error: {e}"),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// The pane a command refers to: `-t`, else the one this process runs in.
+fn target_pane(target: Option<u32>) -> Result<u32> {
+    if let Some(t) = target {
+        return Ok(t);
+    }
+    std::env::var("DTM_PANE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| anyhow!("not inside a dtm pane (use -t PANE)"))
+}
+
+pub async fn select_pane(target: Option<u32>, dir: PaneDir) -> Result<()> {
+    let pane = target_pane(target)?;
+    match request(ClientMsg::SelectPane { pane, dir }).await? {
+        ServerMsg::Ok => Ok(()),
+        ServerMsg::Error(e) => bail!(e),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+pub async fn query(target: Option<u32>, format: String) -> Result<String> {
+    let pane = target_pane(target)?;
+    match request(ClientMsg::Query { pane, format }).await? {
+        ServerMsg::Text(t) => Ok(t),
+        ServerMsg::Error(e) => bail!(e),
         other => bail!("unexpected reply: {other:?}"),
     }
 }
