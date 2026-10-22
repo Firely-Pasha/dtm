@@ -64,7 +64,8 @@ It hides itself when the terminal is too narrow.
 **The sidebar can take keyboard focus** with `<prefix> w`, or by moving focus
 towards it (`<prefix> h` from the leftmost pane, or a root binding such as
 `"C-h" = "focus-left"`; the opposite direction leaves it). While focused:
-`j`/`k` select, `Enter` opens, `x` kills (after a y/n confirmation), `r`
+`j`/`k` select (and show) the window or session as the highlight moves
+(`sidebar.follow`, on by default), `Enter` or `q` leave, `x` kills (after a y/n confirmation), `r`
 renames, `J`/`K` reorder, `n` creates a window or session, `Tab` toggles the
 list, `q` leaves. All of it is configurable in `[keys.sidebar]`.
 

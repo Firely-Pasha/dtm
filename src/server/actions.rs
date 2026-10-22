@@ -588,6 +588,19 @@ impl Server {
         Ok(())
     }
 
+    /// Switch the client to the window or session at sidebar row `idx`.
+    fn show_sidebar_item(&mut self, cid: ClientId, sid: SessionId, mode: SidebarMode, idx: usize) {
+        match mode {
+            SidebarMode::Windows => self.select_window(sid, idx),
+            SidebarMode::Sessions => {
+                if let Some(id) = self.sessions.get(idx).map(|s| s.id)
+                    && id != sid {
+                        self.switch_client(cid, id);
+                    }
+            }
+        }
+    }
+
     fn sidebar_command(&mut self, cid: ClientId, cmd: SidebarCmd) -> Result<(), String> {
         let Some(c) = self.clients.get(&cid) else { return Ok(()) };
         let (Some(sel), Some(sid)) = (c.sidebar_focus, c.session) else { return Ok(()) };
@@ -599,18 +612,17 @@ impl Server {
         };
         let sel = sel.min(count.saturating_sub(1));
         match cmd {
-            SidebarCmd::Down => self.set_sidebar_focus(cid, Some((sel + 1).min(count - 1))),
-            SidebarCmd::Up => self.set_sidebar_focus(cid, Some(sel.saturating_sub(1))),
+            SidebarCmd::Down | SidebarCmd::Up => {
+                let to = if cmd == SidebarCmd::Down { (sel + 1).min(count - 1) } else { sel.saturating_sub(1) };
+                self.set_sidebar_focus(cid, Some(to));
+                if self.cfg.sidebar.follow {
+                    self.show_sidebar_item(cid, sid, mode, to);
+                }
+            }
             SidebarCmd::Leave => self.set_sidebar_focus(cid, None),
             SidebarCmd::Open => {
                 self.set_sidebar_focus(cid, None);
-                match mode {
-                    SidebarMode::Windows => self.select_window(sid, sel),
-                    SidebarMode::Sessions => {
-                        let id = self.sessions[sel].id;
-                        self.switch_client(cid, id);
-                    }
-                }
+                self.show_sidebar_item(cid, sid, mode, sel);
             }
             SidebarCmd::Kill => match mode {
                 SidebarMode::Windows => {
@@ -644,6 +656,9 @@ impl Server {
                         SidebarMode::Sessions => self.sessions.swap(sel, to),
                     }
                     self.set_sidebar_focus(cid, Some(to));
+                    if self.cfg.sidebar.follow {
+                        self.show_sidebar_item(cid, sid, mode, to);
+                    }
                 }
             }
             SidebarCmd::New => match mode {

@@ -28,6 +28,8 @@ pub struct SidebarCfg {
     pub width: u16,
     pub visible: bool,
     pub default_mode: SidebarMode,
+    /// Moving the selection while the sidebar has focus switches to that item right away.
+    pub follow: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +77,7 @@ struct RawSidebar {
     width: Option<u16>,
     visible: Option<bool>,
     default_mode: Option<SidebarMode>,
+    follow: Option<bool>,
 }
 
 #[derive(Deserialize, Default)]
@@ -227,6 +230,7 @@ impl Default for Config {
                 width: 24,
                 visible: true,
                 default_mode: SidebarMode::Windows,
+                follow: true,
             },
             prefix_keys: default_table(DEFAULT_PREFIX_KEYS),
             root_keys: HashMap::new(),
@@ -293,6 +297,9 @@ impl Config {
         if let Some(v) = raw.sidebar.default_mode {
             sb.default_mode = v;
         }
+        if let Some(v) = raw.sidebar.follow {
+            sb.follow = v;
+        }
         apply_table(&mut cfg.prefix_keys, &raw.keys.prefix, "prefix")?;
         apply_table(&mut cfg.root_keys, &raw.keys.root, "root")?;
         apply_table(&mut cfg.copy_keys, &raw.keys.copy, "copy")?;
@@ -325,6 +332,7 @@ mod tests {
         assert_eq!(c.prefix_keys[&(Key::Char('H'), 0)], Action::Resize(Dir::Left, 5));
         assert_eq!(c.sidebar.position, Position::Left);
         assert_eq!(c.sidebar.default_mode, SidebarMode::Windows);
+        assert!(c.sidebar.follow);
         assert!(c.mouse && c.clipboard);
         assert_eq!(c.prefix_keys[&(Key::Char('['), 0)], Action::CopyMode);
         assert_eq!(c.copy_keys[&(Key::Char('v'), 0)], Action::Copy(CopyCmd::Select));
@@ -349,6 +357,7 @@ mod tests {
             position = "right"
             width = 30
             default_mode = "sessions"
+            follow = false
             visible = false
             [keys.prefix]
             "c" = "new-session"
@@ -367,7 +376,7 @@ mod tests {
         assert!(!c.mouse && !c.clipboard);
         assert_eq!(c.sidebar.position, Position::Right);
         assert_eq!(c.sidebar.width, 30);
-        assert!(!c.sidebar.visible);
+        assert!(!c.sidebar.visible && !c.sidebar.follow);
         assert_eq!(c.sidebar.default_mode, SidebarMode::Sessions);
         assert_eq!(c.prefix_keys[&(Key::Char('c'), 0)], Action::NewSession);
         assert!(!c.prefix_keys.contains_key(&(Key::Char('d'), 0)));

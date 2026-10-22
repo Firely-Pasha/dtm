@@ -20,6 +20,8 @@ position = "left"       # left | right
 width = 24              # columns, including the separator line
 visible = true
 default_mode = "windows"  # windows | sessions
+follow = true           # moving the selection in the focused sidebar shows that
+                        # window/session immediately (false: only on Enter)
 
 # Keys pressed after the prefix. A value of "none" removes a default binding.
 [keys.prefix]

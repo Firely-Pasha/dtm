@@ -605,16 +605,18 @@ async fn sidebar_manages_windows() {
     h.wait_for("B gone", |t| !t.contains("3 B")).await;
     assert!(h.text().contains("1 A") && h.text().contains("2 C"));
 
-    // rename the selected window, not the active one
-    h.send("kr");
+    // moving the selection shows that window right away (here: window 1)
+    h.send("k");
+    h.wait_for("window 1 shown", |t| !t.contains("marker42")).await;
+    h.send("r");
     h.wait_text("rename window: A").await;
     h.send("\x7fZ\r");
     h.wait_for("renamed", |t| t.contains("1 Z") && t.contains("2 C")).await;
-    assert!(h.text().contains("marker42"), "still showing window C");
 
     // open the selected window and leave the sidebar
     h.send("\r");
-    h.wait_for("left sidebar", |t| !t.contains(SIDEBAR_HINT) && !t.contains("marker42")).await;
+    h.wait_for("left sidebar", |t| !t.contains(SIDEBAR_HINT)).await;
+    assert!(!h.text().contains("marker42"), "still on window 1");
 
     // new window from the sidebar
     h.send(&format!("{CTRL_A}w"));
@@ -652,6 +654,56 @@ async fn sidebar_manages_sessions() {
     h.wait_text("2 work").await;
     h.send("K");
     h.wait_for("moved up", |t| t.contains("1 work") && t.contains("2 1")).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn sidebar_selection_shows_the_window_as_it_is_highlighted() {
+    let env = Env::new("follow", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("echo one$((1+0))\r");
+    h.wait_text("one1").await;
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send("echo two$((1+1))\r");
+    h.wait_text("two2").await;
+
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("k");
+    h.wait_for("window 1 shown", |t| t.contains("one1") && !t.contains("two2")).await;
+    h.send("j");
+    h.wait_for("window 2 shown", |t| t.contains("two2") && !t.contains("one1")).await;
+    // leaving keeps what is shown
+    h.send("k");
+    h.wait_text("one1").await;
+    h.send("q");
+    h.wait_for("left", |t| !t.contains(SIDEBAR_HINT)).await;
+    assert!(h.text().contains("one1"));
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn sidebar_follow_can_be_turned_off() {
+    let env = Env::new("nofollow", "[sidebar]\nfollow = false\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("echo one$((1+0))\r");
+    h.wait_text("one1").await;
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send("echo two$((1+1))\r");
+    h.wait_text("two2").await;
+    h.send(&format!("{CTRL_A}wk"));
+    h.wait_text(SIDEBAR_HINT).await;
+    // the selection moved but the window did not change until Enter
+    h.wait_cell(0, 2, '›').await;
+    assert!(h.text().contains("two2") && !h.text().contains("one1"));
+    h.send("\r");
+    h.wait_text("one1").await;
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
