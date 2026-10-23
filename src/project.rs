@@ -23,7 +23,19 @@ pub struct ProjectFile {
     pub pane_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dock: Option<DockSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar: Option<SidebarSpec>,
     pub windows: Vec<WindowSpec>,
+}
+
+/// Sidebar settings for this project's session.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SidebarSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
 }
 
 /// The side panel of session-wide panes.
@@ -168,6 +180,8 @@ pub struct Plan {
     pub focus: usize,
     pub pane_command: Option<String>,
     pub dock: Option<PlanDock>,
+    pub sidebar_width: Option<u16>,
+    pub sidebar_visible: Option<bool>,
 }
 
 /// The name a pane gets when it has none: its command's first word, or the shell.
@@ -300,6 +314,11 @@ pub fn validate(file: &ProjectFile) -> Result<(), String> {
     if file.windows.is_empty() {
         return Err("no windows".into());
     }
+    if let Some(w) = file.sidebar.as_ref().and_then(|s| s.width)
+        && !(4..=200).contains(&w)
+    {
+        return Err("sidebar.width must be between 4 and 200".into());
+    }
     if let Some(d) = &file.dock {
         if d.panes.is_empty() {
             return Err("dock: needs at least one pane".into());
@@ -385,7 +404,17 @@ pub fn resolve(file: &ProjectFile, file_dir: &Path, home: &Path) -> Plan {
             })
             .collect(),
     });
-    Plan { name, root, windows, focus, pane_command: file.pane_command.clone(), dock }
+    let sidebar = file.sidebar.clone().unwrap_or_default();
+    Plan {
+        name,
+        root,
+        windows,
+        focus,
+        pane_command: file.pane_command.clone(),
+        dock,
+        sidebar_width: sidebar.width,
+        sidebar_visible: sidebar.visible,
+    }
 }
 
 /// Load and resolve a project file.
@@ -575,6 +604,8 @@ pub fn from_plan(plan: &Plan, base: &Path, home: &Path) -> ProjectFile {
         lazy: None,
         pane_command: plan.pane_command.clone(),
         dock,
+        sidebar: (plan.sidebar_width.is_some() || plan.sidebar_visible.is_some())
+            .then_some(SidebarSpec { width: plan.sidebar_width, visible: plan.sidebar_visible }),
         windows,
     }
 }
@@ -590,6 +621,11 @@ pub fn merge(existing: &ProjectFile, mut exported: ProjectFile) -> ProjectFile {
     if existing.pane_command.is_some() {
         exported.pane_command = existing.pane_command.clone();
     }
+    exported.sidebar = match (&existing.sidebar, exported.sidebar.take()) {
+        (Some(old), Some(new)) => Some(SidebarSpec { width: new.width.or(old.width), visible: old.visible }),
+        (Some(old), None) => Some(old.clone()),
+        (None, new) => new,
+    };
     if let (Some(old), Some(new)) = (&existing.dock, &mut exported.dock) {
         new.width = old.width.clone().or(new.width.take());
         new.visible = old.visible;
@@ -769,6 +805,8 @@ mod tests {
             focus: 1,
             pane_command: None,
             dock: None,
+            sidebar_width: None,
+            sidebar_visible: None,
             windows: vec![
                 PlanWindow {
                     name: Some("a".into()),
@@ -799,6 +837,7 @@ mod tests {
             lazy: None,
             pane_command: None,
             dock: None,
+            sidebar: None,
             windows: vec![WindowSpec { name: Some("a".into()), ..Default::default() }, WindowSpec::default()],
         };
         let m = merge(&old, new);
@@ -821,6 +860,8 @@ mod tests {
             focus: 0,
             pane_command: None,
             dock: None,
+            sidebar_width: None,
+            sidebar_visible: None,
             windows: vec![PlanWindow {
                 name: Some("a".into()),
                 lazy: true,
@@ -851,6 +892,23 @@ mod tests {
         assert_eq!(again.pane_command, p.pane_command);
         assert!(parse("dock: {panes: []}\nwindows: [{}]\n").is_err());
         assert!(parse("dock: {width: x, panes: [{}]}\nwindows: [{}]\n").is_err());
+    }
+
+    #[test]
+    fn sidebar_settings_parse_resolve_export_and_merge() {
+        let p = plan("sidebar: {width: 30, visible: false}\nwindows: [{}]\n", "/proj");
+        assert_eq!((p.sidebar_width, p.sidebar_visible), (Some(30), Some(false)));
+        assert!(parse("sidebar: {width: 2}\nwindows: [{}]\n").is_err());
+        let mut live = p.clone();
+        live.sidebar_width = Some(40);
+        live.sidebar_visible = None;
+        let old = parse("sidebar: {width: 30, visible: false}\nwindows: [{}]\n").unwrap();
+        let m = merge(&old, from_plan(&live, Path::new("/proj"), Path::new(HOME)));
+        assert_eq!(m.sidebar, Some(SidebarSpec { width: Some(40), visible: Some(false) }));
+        // Nothing resized: the file's own settings stay.
+        live.sidebar_width = None;
+        let m = merge(&old, from_plan(&live, Path::new("/proj"), Path::new(HOME)));
+        assert_eq!(m.sidebar, old.sidebar);
     }
 
     #[test]

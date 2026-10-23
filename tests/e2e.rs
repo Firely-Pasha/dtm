@@ -1438,3 +1438,26 @@ async fn sidebar_width_is_kept_by_the_session() {
     h2.wait_text("2 sh").await;
     h2.wait_cell(28, 5, '│').await;
 }
+
+#[tokio::test]
+async fn project_sidebar_width_is_applied_and_exported_and_o_opens() {
+    let env = Env::new("proj-sidebar", "");
+    let proj = env.dir.join("proj");
+    let file = proj.join("project.dtm.yaml");
+    write(&file, "name: sbp\nsidebar:\n  width: 30\nwindows:\n  - name: a\n  - name: b\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("1 a").await;
+    h.wait_cell(29, 5, '│').await;
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send(&format!("{CTRL_A}l"));
+    h.wait_cell(34, 5, '│').await;
+    h.send("j");
+    h.wait_for("window 2 shown", |t| t.contains("2 b")).await;
+    h.send("o");
+    h.wait_for("o left the sidebar", |t| !t.contains(SIDEBAR_HINT)).await;
+    let (ok, msg) = env.run(&["export", "-t", "sbp"]);
+    assert!(ok, "{msg}");
+    let yaml = std::fs::read_to_string(&file).unwrap();
+    assert!(yaml.contains("sidebar:") && yaml.contains("width: 35"), "{yaml}");
+}

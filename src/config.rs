@@ -193,6 +193,7 @@ const DEFAULT_SIDEBAR_KEYS: &[(&str, &str)] = &[
     ("k", "sidebar-up"),
     ("Up", "sidebar-up"),
     ("Enter", "sidebar-open"),
+    ("o", "sidebar-open"),
     ("Space", "sidebar-open"),
     ("x", "sidebar-kill"),
     ("r", "sidebar-rename"),

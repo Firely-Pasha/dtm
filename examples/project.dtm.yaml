@@ -3,6 +3,9 @@ name: app                 # session name (default: the directory's name)
 # root: ~/code/app        # default: the directory of this file
 # lazy: true              # windows start when first shown (default)
 # pane_command: source .venv/bin/activate   # typed into every pane before its command
+sidebar:
+  width: 28               # saved here when you export a resized sidebar
+  # visible: true
 dock:                     # session-wide panes in a side panel (<prefix> D shows it)
   visible: false
   width: 35%

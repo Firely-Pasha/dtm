@@ -38,6 +38,9 @@ impl Server {
         c.rows = rows.max(1);
         c.sidebar_visible = self.cfg.sidebar.visible;
         c.sidebar_mode = self.cfg.sidebar.default_mode;
+        if let Some(v) = plan.sidebar_visible {
+            c.sidebar_visible = v;
+        }
         let running = self.sessions.iter().find(|s| s.name == plan.name).map(|s| s.id);
         let result = match running {
             Some(sid) => Ok(sid),
@@ -104,7 +107,7 @@ impl Server {
             dock_size: (1, 1),
             popup: None,
             popup_shown: false,
-            sidebar_w: None,
+            sidebar_w: plan.sidebar_width,
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;
@@ -365,7 +368,7 @@ impl Server {
                 .collect(),
         });
         Snapshot {
-            plan: Plan { name: s.name.clone(), root, windows, focus: s.active, pane_command: s.pane_command.clone(), dock },
+            plan: Plan { name: s.name.clone(), root, windows, focus: s.active, pane_command: s.pane_command.clone(), dock, sidebar_width: s.sidebar_w, sidebar_visible: None },
             source: s.project.clone(),
         }
     }

@@ -108,7 +108,8 @@ height = "80%"
 [keys.sidebar]
 "j" = "sidebar-down"
 "k" = "sidebar-up"
-"Enter" = "sidebar-open"      # switch to the selected window/session
+"Enter" = "sidebar-open"      # switch to the selected window/session (also "o")
+"o" = "sidebar-open"
 "x" = "sidebar-kill"          # asks y/n
 "r" = "sidebar-rename"
 "J" = "sidebar-move-down"     # reorder windows / sessions

@@ -160,6 +160,9 @@ windows:
   absolute paths work. A pane's `command` is typed into its shell, so you are
   left at a prompt when it ends. Unknown keys and mistakes (a split with one
   pane, a bad size) are reported with their position before anything starts.
+- **`sidebar`** (top level) sets this project's sidebar: `width` (4-200) and
+  `visible`. Exporting writes the width you resized the sidebar to; a
+  `visible` you wrote is kept.
 - **`pane_command`** (top level) is typed into every pane's shell before the
   pane's own command, e.g. `pane_command: source .venv/bin/activate`. It also
   applies to panes you create later in the session (splits, new windows, the
@@ -244,7 +247,7 @@ It hides itself when the terminal is too narrow.
 towards it (`<prefix> Left` from the leftmost pane, or a root binding such as
 `"C-h" = "focus-left"`; the opposite direction leaves it). While focused:
 `j`/`k` select (and show) the window or session as the highlight moves
-(`sidebar.follow`, on by default), `Enter` or `q` leave, `x` kills (after a y/n confirmation), `r`
+(`sidebar.follow`, on by default), `Enter` (or `o`) opens it and leaves, `q` leaves, `x` kills (after a y/n confirmation), `r`
 renames, `J`/`K` reorder, `n` creates a window or session, `Tab` toggles the
 list, `q` leaves. All of it is configurable in `[keys.sidebar]`.
 
