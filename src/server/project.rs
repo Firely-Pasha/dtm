@@ -104,6 +104,7 @@ impl Server {
             dock_size: (1, 1),
             popup: None,
             popup_shown: false,
+            sidebar_w: None,
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;

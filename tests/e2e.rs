@@ -1402,6 +1402,11 @@ async fn prefix_h_l_resize_the_focused_sidebar_and_dock() {
     h.wait_text(SIDEBAR_HINT).await;
     h.send(&format!("{CTRL_A}l"));
     h.wait_cell(28, 5, '│').await;
+    // Like the dock, plain h/l keep resizing by one cell for a moment.
+    h.send("l");
+    h.wait_cell(29, 5, '│').await;
+    h.send("h");
+    h.wait_cell(28, 5, '│').await;
     h.send(&format!("{CTRL_A}h"));
     h.wait_cell(23, 5, '│').await;
     h.send("q");
@@ -1414,4 +1419,22 @@ async fn prefix_h_l_resize_the_focused_sidebar_and_dock() {
     h.wait_cell(67, 5, '│').await;
     h.send(&format!("{CTRL_A}l"));
     h.wait_cell(72, 5, '│').await;
+}
+
+#[tokio::test]
+async fn sidebar_width_is_kept_by_the_session() {
+    let env = Env::new("sidebar-width", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send(&format!("{CTRL_A}l"));
+    h.wait_cell(28, 5, '│').await;
+    h.send("n");
+    h.wait_text("2 sh").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+    let mut h2 = env.client(&[], 100, 30);
+    h2.wait_text("2 sh").await;
+    h2.wait_cell(28, 5, '│').await;
 }

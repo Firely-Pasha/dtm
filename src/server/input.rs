@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use super::actions::Trigger;
+use crate::action::{Action, Dir};
 use super::state::ClientId;
 use super::{Event, Server};
 use crate::keys::{self, Key, KeyEvent};
@@ -61,10 +62,12 @@ impl Server {
             return;
         }
         // For a short while after a resize, plain h/j/k/l keep resizing.
-        if c.sidebar_focus.is_none()
-            && let Some(until) = c.resize_until {
+        let sidebar_focused = c.sidebar_focus.is_some();
+        if let Some(until) = c.resize_until {
                 if Instant::now() < until
-                    && let Some(action) = self.cfg.resize_keys.get(&ev.combo()).cloned() {
+                    && let Some(action) = self.cfg.resize_keys.get(&ev.combo()).cloned()
+                    // A focused sidebar only repeats widening and narrowing; j/k stay its own.
+                    && (!sidebar_focused || matches!(action, Action::Resize(Dir::Left | Dir::Right, _))) {
                         self.run_action(cid, action, Trigger::key(ev.raw.clone()));
                         return;
                     }

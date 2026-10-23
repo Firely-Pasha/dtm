@@ -407,7 +407,8 @@ impl Server {
     // ---- sizing ----
 
     pub fn sidebar_width(&self, c: &Client) -> u16 {
-        let w = c.sidebar_w.unwrap_or(self.cfg.sidebar.width);
+        let set = c.session.and_then(|id| self.sessions.iter().find(|s| s.id == id)).and_then(|s| s.sidebar_w);
+        let w = set.unwrap_or(self.cfg.sidebar.width);
         if c.sidebar_visible && c.cols >= w + MIN_CONTENT { w } else { 0 }
     }
 

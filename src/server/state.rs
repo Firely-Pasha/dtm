@@ -134,6 +134,8 @@ pub struct Session {
     pub dock_size: (u16, u16),
     pub popup: Option<PaneId>,
     pub popup_shown: bool,
+    /// Sidebar width set by resizing (shared by every client); the configured width when unset.
+    pub sidebar_w: Option<u16>,
 }
 
 impl Session {
@@ -214,8 +216,6 @@ pub struct Client {
     /// Selected row while the sidebar has keyboard focus.
     pub sidebar_focus: Option<usize>,
     pub search: Option<Search>,
-    /// Sidebar width set by resizing; the configured width when unset.
-    pub sidebar_w: Option<u16>,
     /// Plain resize keys are accepted until this moment.
     pub resize_until: Option<Instant>,
     pub prev: Option<Canvas>,
@@ -239,7 +239,6 @@ impl Client {
             prompt: None,
             sidebar_focus: None,
             search: None,
-            sidebar_w: None,
             resize_until: None,
             prev: None,
             last_active: Instant::now(),

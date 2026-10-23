@@ -100,6 +100,7 @@ impl Server {
             dock_size: (1, 1),
             popup: None,
             popup_shown: false,
+            sidebar_w: None,
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;
@@ -704,9 +705,7 @@ impl Server {
         if sidebar {
             let max = cols.saturating_sub(super::MIN_CONTENT + dw).max(4);
             let w = step(sw).clamp(4, max.min(200));
-            if let Some(c) = self.clients.get_mut(&cid) {
-                c.sidebar_w = Some(w);
-            }
+            self.sessions[si].sidebar_w = Some(w);
         } else {
             let max = cols.saturating_sub(sw + super::MIN_CONTENT).max(super::MIN_DOCK);
             let w = step(dw).clamp(super::MIN_DOCK, max);
