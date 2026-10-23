@@ -186,8 +186,8 @@ windows:
   one keeps it, and the paths are then written relative to it. A saved project
   is updated in place, never exported to its root. When updating, your `name`,
   `root`, `lazy`, `pane_command` and dock size are kept, but comments are not.
-  `e` in the focused sidebar (and the unbound `export-project` action) does the
-  same from a key.
+  `e` in the focused sidebar does the same after asking (it shows the file it
+  will write); the unbound `export-project` action writes at once.
 - **Respawn.** `<prefix> R` restarts the focused pane the way it started (same
   directory and command, a new process) and `<prefix> Alt-r` restarts the whole
   window from its project layout, closing panes you added since. Both ask first.

@@ -167,6 +167,7 @@ pub enum PromptKind {
     DockAdd(SessionId),
     DockRename(SessionId),
     ConfirmDockClose(SessionId),
+    ConfirmExport(SessionId),
 }
 
 impl PromptKind {
@@ -179,6 +180,7 @@ impl PromptKind {
                 | PromptKind::ConfirmRespawnPane(_)
                 | PromptKind::ConfirmRespawnWindow(_)
                 | PromptKind::ConfirmDockClose(_)
+                | PromptKind::ConfirmExport(_)
         )
     }
 }

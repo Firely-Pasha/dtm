@@ -382,13 +382,18 @@ impl Server {
     }
 
     /// The `export-project` action: write the client's session to its project file.
+    /// The file an export of this snapshot writes.
+    pub fn export_target(snap: &Snapshot) -> Result<PathBuf, String> {
+        match &snap.source {
+            Some(p) => Ok(p.clone()),
+            None if snap.plan.root.as_os_str().is_empty() => Err("session has no directory to export to".into()),
+            None => Ok(snap.plan.root.join(project::PROJECT_FILE)),
+        }
+    }
+
     pub fn export_project(&mut self, si: usize) -> Result<PathBuf, String> {
         let snap = self.snapshot_session(si);
-        let target = match &snap.source {
-            Some(p) => p.clone(),
-            None if snap.plan.root.as_os_str().is_empty() => return Err("session has no directory to export to".into()),
-            None => snap.plan.root.join(project::PROJECT_FILE),
-        };
+        let target = Self::export_target(&snap)?;
         project::export_to(&snap.plan, &target, &project::home_dir())?;
         self.sessions[si].project = Some(target.clone());
         Ok(target)

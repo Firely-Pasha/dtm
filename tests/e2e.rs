@@ -1217,7 +1217,15 @@ async fn sidebar_export_updates_the_named_project_and_keeps_its_root() {
     h.wait_text("1 one").await;
     h.send(&format!("{CTRL_A}w"));
     h.wait_text(SIDEBAR_HINT).await;
+    let before = std::fs::read_to_string(&file).unwrap();
     h.send("e");
+    h.wait_text("export to").await;
+    h.send("n");
+    h.wait_for("declined", |t| !t.contains("(y/n)")).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "declining must not write");
+    h.send("e");
+    h.wait_text("(y/n)").await;
+    h.send("y");
     h.wait_text("exported to").await;
     let yaml = std::fs::read_to_string(&file).unwrap();
     assert!(yaml.contains(&format!("root: {}", work.display())), "{yaml}");

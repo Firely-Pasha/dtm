@@ -725,6 +725,13 @@ impl Server {
                     self.message(cid, e);
                 }
             }
+            PromptKind::ConfirmExport(id) => {
+                let result = self.session_index(id).ok_or_else(|| "no session".to_string()).and_then(|si| self.export_project(si));
+                match result {
+                    Ok(p) => self.message(cid, format!("exported to {}", p.display())),
+                    Err(e) => self.message(cid, e),
+                }
+            }
             PromptKind::DockRename(id) => self.rename_dock_entry(id, text),
             PromptKind::ConfirmDockClose(id) => {
                 if let Some(si) = self.session_index(id) {
@@ -883,8 +890,10 @@ impl Server {
             }
             SidebarCmd::Export => {
                 let target = if mode == SidebarMode::Sessions { sel } else { si };
-                let path = self.export_project(target)?;
-                self.message(cid, format!("exported to {}", path.display()));
+                let path = Self::export_target(&self.snapshot_session(target))?;
+                let id = self.sessions[target].id;
+                let label = format!("export to {}? (y/n)", path.display());
+                self.set_prompt(cid, PromptKind::ConfirmExport(id), String::new(), label);
             }
             SidebarCmd::Rename => match mode {
                 SidebarMode::Windows => {
