@@ -1626,6 +1626,11 @@ async fn prefix_tab_steps_back_and_plain_tab_keeps_stepping() {
     h.wait_for("window 1", |t| shown(t, 1)).await;
     h.send("\x1b[Z");
     h.wait_for("forward to window 2", |t| shown(t, 2)).await;
+    // the prefix starts over at once: window 2 is now the latest, so it toggles to 3 and back
+    h.send(&format!("{CTRL_A}\t"));
+    h.wait_for("toggled to window 3", |t| shown(t, 3)).await;
+    h.send(&format!("{CTRL_A}\t"));
+    h.wait_for("toggled back to window 2", |t| shown(t, 2)).await;
     // after the repeat time Tab is the shell's again, and the prefix toggles back
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     h.send(&format!("{CTRL_A}\t"));

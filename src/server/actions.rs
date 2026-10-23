@@ -396,6 +396,10 @@ impl Server {
                 Ok(())
             },
             Action::RecentWindow(back) => {
+                // Each prefix press starts over; plain Tab (and a root binding) go on.
+                if trigger.prefix.is_some() {
+                    self.end_cycle(cid);
+                }
                 self.recent_window(cid, si, back);
                 Ok(())
             }
