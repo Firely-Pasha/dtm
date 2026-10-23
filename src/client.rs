@@ -19,7 +19,7 @@ use crate::{paths, tty};
 /// Enter the alternate screen and disable autowrap (the server relies on it).
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[?7l\x1b[0m\x1b[2J\x1b[H";
 /// Undo everything the server may have switched on.
-const LEAVE: &[u8] = b"\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l";
+const LEAVE: &[u8] = b"\x1b[0m\x1b[0 q\x1b[?1l\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l";
 
 fn spawn_server() -> Result<()> {
     let exe = std::env::current_exe().context("locating dtm executable")?;

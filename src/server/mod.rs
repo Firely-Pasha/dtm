@@ -721,6 +721,7 @@ impl Server {
         canvas.blit_canvas(content, content_x, 0, cw, rows);
         canvas.app_cursor = content.app_cursor;
         canvas.bracketed_paste = content.bracketed_paste;
+        canvas.cursor_style = content.cursor_style;
         canvas.mouse = self.cfg.mouse;
         canvas.cursor = content.cursor.filter(|&(x, y)| x < cw && y < rows).map(|(x, y)| (x + content_x, y));
         if dw > 0 {
@@ -740,6 +741,7 @@ impl Server {
             let m = p.screen.modes();
             canvas.app_cursor = m.app_cursor;
             canvas.bracketed_paste = m.bracketed_paste;
+            canvas.cursor_style = m.cursor_style;
         }
         let view = self.sidebar_view(c, s);
         if sw > 0 {

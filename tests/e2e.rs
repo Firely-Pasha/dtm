@@ -1487,3 +1487,17 @@ async fn resizing_shows_the_size_until_the_repeat_window_ends() {
     h.wait_for("sidebar badge", |t| t.contains("29 cols")).await;
     h.wait_for("sidebar badge gone", |t| !t.contains("29 cols")).await;
 }
+
+#[tokio::test]
+async fn cursor_shape_requests_reach_the_terminal() {
+    let env = Env::new("cursor-shape", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("printf '\\033[6 q'; echo SYNC$((1+1))\r");
+    h.wait_text("SYNC2").await;
+    assert_eq!(h.screen.modes().cursor_style, 6);
+    h.send(&format!("{CTRL_A}|"));
+    h.send("printf '\\033[2 q'; echo SYNC$((2+2))\r");
+    h.wait_text("SYNC4").await;
+    assert_eq!(h.screen.modes().cursor_style, 2);
+}

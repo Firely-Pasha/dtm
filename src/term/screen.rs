@@ -49,6 +49,8 @@ pub struct Modes {
     pub mouse: MouseTracking,
     /// SGR mouse encoding (1006) was requested.
     pub mouse_sgr: bool,
+    /// DECSCUSR cursor shape: 0 is the terminal default, 1-6 block/underline/bar, blinking or steady.
+    pub cursor_style: u8,
 }
 
 impl Default for Modes {
@@ -63,6 +65,7 @@ impl Default for Modes {
             alt_screen: false,
             mouse: MouseTracking::Off,
             mouse_sgr: false,
+            cursor_style: 0,
         }
     }
 }
@@ -551,6 +554,8 @@ impl Screen {
         if !inter.is_empty() {
             if inter == b"!" && fin == b'p' {
                 self.soft_reset();
+            } else if inter == b" " && fin == b'q' && private.is_none() {
+                self.modes.cursor_style = raw(0).min(6) as u8;
             }
             return;
         }
@@ -1104,5 +1109,19 @@ mod tests {
         let s = screen(4, 1, "\x1b[?1h\x1b[?2004h\x1b[?25l");
         let m = s.modes();
         assert!(m.app_cursor && m.bracketed_paste && !m.cursor_visible);
+    }
+
+    #[test]
+    fn decscusr_sets_the_cursor_shape() {
+        let mut s = Screen::new(10, 3, 10);
+        assert_eq!(s.modes().cursor_style, 0);
+        s.feed(b"\x1b[6 q");
+        assert_eq!(s.modes().cursor_style, 6);
+        s.feed(b"\x1b[2 q");
+        assert_eq!(s.modes().cursor_style, 2);
+        s.feed(b"\x1b[ q");
+        assert_eq!(s.modes().cursor_style, 0);
+        s.feed(b"\x1b[?1 q");
+        assert_eq!(s.modes().cursor_style, 0, "private forms are not DECSCUSR");
     }
 }

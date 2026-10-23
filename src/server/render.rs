@@ -69,6 +69,7 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
         let m = pane.screen.modes();
         canvas.app_cursor = m.app_cursor;
         canvas.bracketed_paste = m.bracketed_paste;
+        canvas.cursor_style = m.cursor_style;
         if let Some(copy) = &pane.copy {
             if copy.cx < r.w as usize && copy.cy < r.h as usize {
                 canvas.cursor = Some((r.x as usize + copy.cx, r.y as usize + copy.cy));

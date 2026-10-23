@@ -13,6 +13,8 @@ pub struct Canvas {
     pub cursor: Option<(usize, usize)>,
     pub app_cursor: bool,
     pub bracketed_paste: bool,
+    /// DECSCUSR cursor shape (0 = the terminal's default).
+    pub cursor_style: u8,
     /// Ask the terminal for SGR mouse reports.
     pub mouse: bool,
 }
@@ -26,6 +28,7 @@ impl Canvas {
             cursor: None,
             app_cursor: false,
             bracketed_paste: false,
+            cursor_style: 0,
             mouse: false,
         }
     }
@@ -197,6 +200,7 @@ impl Canvas {
         }
         let modes_changed = self.app_cursor != prev.app_cursor
             || self.bracketed_paste != prev.bracketed_paste
+            || self.cursor_style != prev.cursor_style
             || self.mouse != prev.mouse;
         if body.is_empty() && !modes_changed && self.cursor == prev.cursor {
             return body;
@@ -209,6 +213,9 @@ impl Canvas {
         }
         if self.bracketed_paste != prev.bracketed_paste {
             out.extend_from_slice(if self.bracketed_paste { b"\x1b[?2004h" } else { b"\x1b[?2004l" });
+        }
+        if self.cursor_style != prev.cursor_style {
+            out.extend_from_slice(format!("\x1b[{} q", self.cursor_style).as_bytes());
         }
         if self.mouse != prev.mouse {
             out.extend_from_slice(if self.mouse { b"\x1b[?1000h\x1b[?1006h" } else { b"\x1b[?1000l\x1b[?1006l" });
@@ -262,6 +269,7 @@ pub fn canvas_from_screen(screen: &Screen) -> Canvas {
     let m = screen.modes();
     c.app_cursor = m.app_cursor;
     c.bracketed_paste = m.bracketed_paste;
+    c.cursor_style = m.cursor_style;
     if m.cursor_visible {
         c.cursor = Some(screen.cursor_pos());
     }
