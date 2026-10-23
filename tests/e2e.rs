@@ -1258,8 +1258,8 @@ async fn search_filters_windows_fuzzily() {
     h.send("\r");
     h.wait_for("search closed", |t| !t.contains("⏎ open") && t.contains("1 alpha") && t.contains("SRV7")).await;
 
-    // Escape goes back to the window the search started from.
-    h.send(&format!("{CTRL_A}f"));
+    // Escape goes back to the window the search started from; <prefix> / searches too.
+    h.send(&format!("{CTRL_A}/"));
     h.send("alp");
     h.wait_for("alpha shown", |t| t.contains("AA2") && !t.contains("SRV7")).await;
     h.send("\x1b");
@@ -1602,6 +1602,39 @@ async fn select_pane_past_the_edge_enters_the_dock() {
     h.send("echo IN$((2+2))\r");
     h.wait_text("IN4").await;
     assert!(column_of(&h.text(), "IN4").unwrap() > 60, "{}", h.text());
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn prefix_tab_steps_back_and_plain_tab_keeps_stepping() {
+    let env = Env::new("prefixtab", "[options]\nrepeat_time = 300\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    for (i, c) in ["", "c", "c"].iter().enumerate() {
+        if !c.is_empty() {
+            h.send(&format!("{CTRL_A}{c}"));
+            h.wait_text(&format!("{} sh", i + 1)).await;
+        }
+        h.send(&format!("echo W$((100+{}))\r", i + 1));
+        h.wait_text(&format!("W10{}", i + 1)).await;
+    }
+    let shown = |t: &str, n: usize| (1..=3).all(|i| t.contains(&format!("W10{i}")) == (i == n));
+    h.send(&format!("{CTRL_A}\t"));
+    h.wait_for("window 2", |t| shown(t, 2)).await;
+    h.send("\t");
+    h.wait_for("window 1", |t| shown(t, 1)).await;
+    h.send("\x1b[Z");
+    h.wait_for("forward to window 2", |t| shown(t, 2)).await;
+    // after the repeat time Tab is the shell's again, and the prefix toggles back
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    h.send(&format!("{CTRL_A}\t"));
+    h.wait_for("back to window 3", |t| shown(t, 3)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    h.send("ech\t");
+    h.wait_text("echo").await;
+    assert!(shown(&h.text(), 3), "{}", h.text());
+    h.send("\x03");
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }

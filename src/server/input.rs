@@ -47,8 +47,23 @@ impl Server {
 
     fn handle_key(&mut self, cid: ClientId, ev: KeyEvent) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
+        // For a short while after a recent-window step, plain Tab / Shift-Tab keep stepping.
+        let combo = ev.combo();
+        let repeat = c.prefix.is_none()
+            && c.prompt.is_none()
+            && c.search.is_none()
+            && c.cycle_until.is_some_and(|t| Instant::now() < t)
+            && matches!(combo, (Key::Tab, 0) | (Key::Tab, keys::SHIFT));
+        if repeat {
+            let back = combo.1 == 0;
+            self.run_action(cid, Action::RecentWindow(back), Trigger::key(ev.raw.clone()));
+            return;
+        }
+        let table = if c.prefix.is_some() { &self.cfg.prefix_keys } else { &self.cfg.root_keys };
+        let steps = matches!(table.get(&combo), Some(Action::RecentWindow(_)));
         if c.cycle.is_some()
-            && !matches!(self.cfg.root_keys.get(&ev.combo()), Some(Action::RecentWindow(_)))
+            && !steps
+            && combo != self.cfg.prefix
             && !matches!(ev.key, Key::Mouse(MouseEvent { kind: MouseKind::Move, .. }))
         {
             self.end_cycle(cid);

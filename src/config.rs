@@ -164,6 +164,10 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("R", "respawn-pane"),
     ("M-r", "respawn-window"),
     ("f", "search-windows"),
+    ("/", "search-windows"),
+    // Then plain Tab / Shift-Tab keep stepping for the repeat time.
+    ("Tab", "recent-window"),
+    ("S-Tab", "recent-window-reverse"),
     ("P", "toggle-popup"),
     ("D", "toggle-dock"),
     ("}", "dock-next"),
@@ -405,6 +409,8 @@ mod tests {
         assert!(c.sidebar.follow);
         assert!(c.mouse && c.clipboard && c.focus_top_left);
         assert_eq!(c.root_keys[&(Key::Tab, CTRL)], Action::RecentWindow(true));
+        assert_eq!(c.prefix_keys[&(Key::Tab, 0)], Action::RecentWindow(true));
+        assert_eq!(c.prefix_keys[&(Key::Char('/'), 0)], Action::SearchWindows);
         assert_eq!(Config::from_toml("[options]\nwindow_focus = \"last\"").map(|c| c.focus_top_left), Ok(false));
         assert_eq!(c.prefix_keys[&(Key::Char('['), 0)], Action::CopyMode);
         assert_eq!(c.copy_keys[&(Key::Char('v'), 0)], Action::Copy(CopyCmd::Select));

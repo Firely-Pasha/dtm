@@ -40,20 +40,22 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `Ctrl-l` | send a literal Ctrl-l | `[` or `PageUp` | copy mode |
 | `]` | paste | `a` | send a literal Ctrl-a |
 | `r` | reload config | `R` | respawn pane (asks) |
-| `Alt-r` | respawn window (asks) | `f` | search windows |
+| `Alt-r` | respawn window (asks) | `f` or `/` | search windows |
+| `Tab` | previously opened window (then `Tab` / `Shift-Tab` repeat) | | |
 | `P` | popup shell (toggle) | `D` | show / hide the dock |
 | `{` / `}` | previous / next dock pane | `A` / `X` | add / close a dock pane |
 
 Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
-(see below), and **`Ctrl-Tab`** goes back to the window you opened before.
+(see below).
 
-**Recent windows**: `Ctrl-Tab` toggles to the previously opened window; pressing
-it again within the repeat time (`options.repeat_time`, 1 second) goes further
-back, like Alt-Tab, and `Ctrl-Shift-Tab` goes the other way. A window counts as
+**Recent windows**: `<prefix> Tab` toggles to the previously opened window; for
+the repeat time after it (`options.repeat_time`, 1 second) plain `Tab` goes
+further back, like Alt-Tab, and `Shift-Tab` goes the other way. Any other key
+ends it, and after that `Tab` is the shell's again. A window counts as
 opened when you choose it (`Enter`/`o` in the sidebar, a click, `<prefix> 1`-`9`,
 `n`/`p`, search), not while the sidebar selection merely passes over it.
-Terminals only send `Ctrl-Tab` when asked to, and most use it for their own tabs:
-make yours send `ESC [ 9 ; 5 u` (and `ESC [ 9 ; 6 u` for `Ctrl-Shift-Tab`), e.g.
+`Ctrl-Tab` / `Ctrl-Shift-Tab` do the same without the prefix, but terminals only
+send them when asked to, and most use them for their own tabs: make yours send `ESC [ 9 ; 5 u` (and `ESC [ 9 ; 6 u` for `Ctrl-Shift-Tab`), e.g.
 Ghostty `keybind = ctrl+tab=csi:9;5u`, kitty `map ctrl+tab send_text all \x1b[9;5u`,
 WezTerm `{ key = "Tab", mods = "CTRL", action = act.SendString "\x1b[9;5u" }`, or
 an iTerm2 key mapping "Send Escape Sequence" `[9;5u`. xterm's
