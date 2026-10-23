@@ -6,7 +6,7 @@ use super::actions::Trigger;
 use crate::action::{Action, Dir};
 use super::state::ClientId;
 use super::{Event, Server};
-use crate::keys::{self, Key, KeyEvent};
+use crate::keys::{self, Key, KeyEvent, MouseEvent, MouseKind};
 
 /// How long a lone ESC waits to see whether it starts an escape sequence.
 const ESC_TIMEOUT: Duration = Duration::from_millis(25);
@@ -46,6 +46,13 @@ impl Server {
     }
 
     fn handle_key(&mut self, cid: ClientId, ev: KeyEvent) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        if c.cycle.is_some()
+            && !matches!(self.cfg.root_keys.get(&ev.combo()), Some(Action::RecentWindow(_)))
+            && !matches!(ev.key, Key::Mouse(MouseEvent { kind: MouseKind::Move, .. }))
+        {
+            self.end_cycle(cid);
+        }
         let Some(c) = self.clients.get_mut(&cid) else { return };
         if c.prompt.is_some() {
             return self.prompt_key(cid, ev);

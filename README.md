@@ -45,7 +45,22 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `{` / `}` | previous / next dock pane | `A` / `X` | add / close a dock pane |
 
 Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
-(see below).
+(see below), and **`Ctrl-Tab`** goes back to the window you opened before.
+
+**Recent windows**: `Ctrl-Tab` toggles to the previously opened window; pressing
+it again within the repeat time (`options.repeat_time`, 1 second) goes further
+back, like Alt-Tab, and `Ctrl-Shift-Tab` goes the other way. A window counts as
+opened when you choose it (`Enter`/`o` in the sidebar, a click, `<prefix> 1`-`9`,
+`n`/`p`, search), not while the sidebar selection merely passes over it.
+Terminals only send `Ctrl-Tab` when asked to, and most use it for their own tabs:
+make yours send `ESC [ 9 ; 5 u` (and `ESC [ 9 ; 6 u` for `Ctrl-Shift-Tab`), e.g.
+Ghostty `keybind = ctrl+tab=csi:9;5u`, kitty `map ctrl+tab send_text all \x1b[9;5u`,
+WezTerm `{ key = "Tab", mods = "CTRL", action = act.SendString "\x1b[9;5u" }`, or
+an iTerm2 key mapping "Send Escape Sequence" `[9;5u`. xterm's
+`modifyOtherKeys` form (`ESC [ 27 ; 5 ; 9 ~`) works too.
+
+**Switching windows** focuses the top-left pane of the window
+(`options.window_focus = "last"` keeps the pane that was focused there).
 
 **Resizing**: while you resize (and for the repeat window after it), the middle of the pane shows its size as `columns×rows`, and the sidebar or dock shows its width, so panes in different windows can be lined up.
 
@@ -219,7 +234,8 @@ Dock panes start the first time they are shown. `<prefix> D` shows or hides
 the dock, `{` and `}` cycle its panes, `A` asks for a command and adds a pane
 running it (empty: a shell), `X` closes the current one (asks first), and the
 `dock-rename` / `focus-dock` actions are unbound. `Ctrl-l` from the rightmost
-window pane (or any focus move towards the dock) moves into it and the opposite
+window pane (or any focus move towards the dock, including the Neovim plugin's
+at the edge of Neovim) moves into it and the opposite
 direction comes back; clicks on tabs and panes work too. `<prefix> x` closes the
 focused dock pane without asking. The dock is exported with the project.
 
@@ -269,7 +285,7 @@ checked by the test suite to match the built-in defaults.
 - Key notation: `C-a`, `M-h`, `S-Left`, `C-M-x`, `F5`, `PageUp`, `Space`, or a
   single character.
 - Actions: `new-window`, `kill-window`, `next-window`, `prev-window`,
-  `select-window N`, `rename-window`, `split-vertical`, `split-horizontal`,
+  `select-window N`, `recent-window`, `recent-window-reverse`, `rename-window`, `split-vertical`, `split-horizontal`,
   `focus-left|right|up|down`, `focus-next`, `resize-left|right|up|down [N]`,
   `kill-pane`, `zoom-pane`, `new-session`, `next-session`, `prev-session`,
   `select-session N`, `rename-session`, `toggle-sidebar`,

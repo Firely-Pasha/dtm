@@ -81,7 +81,14 @@ impl Server {
             PaneDir::Up => Dir::Up,
             PaneDir::Down => Dir::Down,
         };
-        if !self.focus_dir_from(si, wi, pane, dir) && self.toward_sidebar(dir) && wi == self.sessions[si].active {
+        let moved = self.focus_dir_from(si, wi, pane, dir);
+        let s = &self.sessions[si];
+        if !moved && !self.toward_sidebar(dir) && matches!(dir, Dir::Left | Dir::Right) && wi == s.active {
+            // Past the edge away from the sidebar: on into the dock, as Ctrl-l does outside an editor.
+            if s.dock.visible && !s.dock.entries.is_empty() {
+                self.sessions[si].dock.focused = true;
+            }
+        } else if !moved && self.toward_sidebar(dir) && wi == s.active {
             // Past the edge on the sidebar's side: the sidebar takes focus for the user driving this session.
             let sid = self.sessions[si].id;
             let client = self

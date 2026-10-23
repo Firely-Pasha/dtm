@@ -321,6 +321,11 @@ fn decode_csi(b: &[u8], flush: bool) -> Option<(KeyEvent, usize)> {
         b'R' => Key::F(3),
         b'S' => Key::F(4),
         b'Z' => return Some((ev(Key::Tab, SHIFT, raw), j + 1)),
+        // CSI code ; mods u (kitty, fixterms) and CSI 27 ; mods ; code ~ (xterm modifyOtherKeys).
+        b'u' => return Some((codepoint_key(nums[0], mods, raw), j + 1)),
+        b'~' if nums.first() == Some(&27) => {
+            return Some((codepoint_key(nums.get(2).copied().unwrap_or(0), mods, raw), j + 1));
+        }
         b'~' => match nums.first().copied().unwrap_or(0) {
             1 | 7 => Key::Home,
             2 => Key::Insert,
@@ -337,6 +342,27 @@ fn decode_csi(b: &[u8], flush: bool) -> Option<(KeyEvent, usize)> {
     };
     let mods = if key == Key::Other { 0 } else { mods };
     Some((ev(key, mods, raw), j + 1))
+}
+
+/// A key reported by its Unicode code point, normalised the way `parse_key` spells it.
+fn codepoint_key(code: u32, mods: u8, raw: &[u8]) -> KeyEvent {
+    let key = match code {
+        9 => Key::Tab,
+        13 => Key::Enter,
+        27 => Key::Escape,
+        127 => Key::Backspace,
+        c => match char::from_u32(c).filter(|c| !c.is_control()) {
+            Some(c) => Key::Char(c),
+            None => return ev(Key::Other, 0, raw),
+        },
+    };
+    match key {
+        Key::Char(c) if mods & CTRL != 0 && c.is_ascii_alphabetic() => ev(Key::Char(c.to_ascii_lowercase()), mods, raw),
+        Key::Char(c) if mods & SHIFT != 0 && c.is_ascii_alphabetic() => {
+            ev(Key::Char(c.to_ascii_uppercase()), mods & !SHIFT, raw)
+        }
+        _ => ev(key, mods, raw),
+    }
 }
 
 fn parse_sgr_mouse(params: &str, fin: u8) -> Option<MouseEvent> {
@@ -420,6 +446,13 @@ mod tests {
         assert_eq!(keys(b"\x1b[1;2D"), vec![(Key::Left, SHIFT)]);
         assert_eq!(keys(b"\x1b[1;3A"), vec![(Key::Up, ALT)]);
         assert_eq!(keys(b"\x1b[Z"), vec![(Key::Tab, SHIFT)]);
+        assert_eq!(keys(b"\x1b[9;5u"), vec![(Key::Tab, CTRL)]);
+        assert_eq!(keys(b"\x1b[9;6u"), vec![(Key::Tab, CTRL | SHIFT)]);
+        assert_eq!(keys(b"\x1b[27;5;9~"), vec![(Key::Tab, CTRL)]);
+        assert_eq!(keys(b"\x1b[97;5u"), vec![(Key::Char('a'), CTRL)]);
+        assert_eq!(keys(b"\x1b[97;2u"), vec![(Key::Char('A'), 0)]);
+        assert_eq!(parse_key("C-Tab"), Ok((Key::Tab, CTRL)));
+        assert_eq!(parse_key("C-S-Tab"), Ok((Key::Tab, CTRL | SHIFT)));
     }
 
     #[test]
@@ -504,6 +537,6 @@ mod tests {
         assert_eq!(keys(b"\x1b[<0;0;5M"), vec![(Key::Other, 0)]);
         assert_eq!(keys(b"\x1b[<0;1M"), vec![(Key::Other, 0)]);
         assert_eq!(keys(b"\x1b[<66;1;1M"), vec![(Key::Other, 0)]);
-        assert_eq!(keys(b"\x1b[97;5u"), vec![(Key::Other, 0)]);
+        assert_eq!(keys(b"\x1b[1;5u"), vec![(Key::Other, 0)]);
     }
 }

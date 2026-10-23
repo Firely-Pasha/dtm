@@ -60,6 +60,8 @@ pub enum Action {
     KillWindow,
     NextWindow,
     PrevWindow,
+    /// Step through windows in the order they were last opened (`true`: further back).
+    RecentWindow(bool),
     /// 1-based, as shown in the sidebar.
     SelectWindow(usize),
     RenameWindow,
@@ -144,6 +146,8 @@ impl FromStr for Action {
             "kill-window" => no_arg(Action::KillWindow),
             "next-window" => no_arg(Action::NextWindow),
             "prev-window" => no_arg(Action::PrevWindow),
+            "recent-window" => no_arg(Action::RecentWindow(true)),
+            "recent-window-reverse" => no_arg(Action::RecentWindow(false)),
             "select-window" => {
                 let n: usize = number(arg, name)?;
                 if n == 0 { Err("select-window is 1-based".into()) } else { Ok(Action::SelectWindow(n)) }

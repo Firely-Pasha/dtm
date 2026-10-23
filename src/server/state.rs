@@ -136,6 +136,8 @@ pub struct Session {
     pub popup_shown: bool,
     /// Sidebar width set by resizing (shared by every client); the configured width when unset.
     pub sidebar_w: Option<u16>,
+    /// Windows in the order they were last opened, most recent first.
+    pub recent: Vec<WindowId>,
 }
 
 impl Session {
@@ -200,6 +202,13 @@ pub struct Search {
     pub origin: usize,
 }
 
+/// Ctrl-Tab stepping through recently opened windows.
+pub struct Cycle {
+    /// The order when the cycle began; `list[0]` is the window it started from.
+    pub list: Vec<WindowId>,
+    pub idx: usize,
+}
+
 pub struct Client {
     pub id: ClientId,
     pub tx: UnboundedSender<ServerMsg>,
@@ -216,6 +225,10 @@ pub struct Client {
     /// Selected row while the sidebar has keyboard focus.
     pub sidebar_focus: Option<usize>,
     pub search: Option<Search>,
+    /// The recent-window cycle in progress; the shown window counts as opened once it ends.
+    pub cycle: Option<Cycle>,
+    /// Further recent-window presses until this moment go on with the cycle.
+    pub cycle_until: Option<Instant>,
     /// Plain resize keys are accepted until this moment.
     pub resize_until: Option<Instant>,
     pub prev: Option<Canvas>,
@@ -239,6 +252,8 @@ impl Client {
             prompt: None,
             sidebar_focus: None,
             search: None,
+            cycle: None,
+            cycle_until: None,
             resize_until: None,
             prev: None,
             last_active: Instant::now(),

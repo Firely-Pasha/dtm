@@ -1522,3 +1522,86 @@ async fn export_saves_the_directory_a_pane_changed_to() {
     assert!(yaml.contains("path: deep/er"), "{yaml}");
     assert!(yaml.contains("path: deep\n"), "{yaml}");
 }
+
+const CTRL_TAB: &str = "\x1b[9;5u";
+
+#[tokio::test]
+async fn ctrl_tab_steps_back_through_opened_windows() {
+    let env = Env::new("ctrltab", "[options]\nrepeat_time = 300\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    for (i, c) in ["", "c", "c"].iter().enumerate() {
+        if !c.is_empty() {
+            h.send(&format!("{CTRL_A}{c}"));
+            h.wait_text(&format!("{} sh", i + 1)).await;
+        }
+        h.send(&format!("echo W$((100+{}))\r", i + 1));
+        h.wait_text(&format!("W10{}", i + 1)).await;
+    }
+    let shown = |t: &str, n: usize| (1..=3).all(|i| t.contains(&format!("W10{i}")) == (i == n));
+    // one press toggles to the window opened before; quick presses go further back
+    h.send(CTRL_TAB);
+    h.wait_for("window 2", |t| shown(t, 2)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    h.send(CTRL_TAB);
+    h.wait_for("back to window 3", |t| shown(t, 3)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    h.send(&format!("{CTRL_TAB}{CTRL_TAB}"));
+    h.wait_for("window 1", |t| shown(t, 1)).await;
+    // windows passed over in the sidebar do not count as opened, only the one chosen
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("j");
+    h.wait_for("window 2 shown", |t| shown(t, 2)).await;
+    h.send("j");
+    h.wait_for("window 3 shown", |t| shown(t, 3)).await;
+    h.send("o");
+    h.wait_for("left", |t| !t.contains(SIDEBAR_HINT)).await;
+    h.send(CTRL_TAB);
+    h.wait_for("window 1 again", |t| shown(t, 1)).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn switching_windows_focuses_the_top_left_pane() {
+    let env = Env::new("topleft", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send(&format!("{CTRL_A}1"));
+    h.send("echo TL$((1+1))\r");
+    h.wait_text("TL2").await;
+    assert!(!right_pane_text(&h).contains("TL2"), "typed into the right pane:\n{}", h.text());
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn select_pane_past_the_edge_enters_the_dock() {
+    let env = Env::new("dock-ipc", "");
+    let mut h = env.client(&[], 120, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}D"));
+    h.wait_text("no panes").await;
+    h.send(&format!("{CTRL_A}A"));
+    h.wait_text("dock command").await;
+    h.send("\r");
+    h.send("echo DOCK$((1+1))\r");
+    h.wait_text("DOCK2").await;
+    assert!(column_of(&h.text(), "DOCK2").unwrap() > 60, "{}", h.text());
+    // back to the window, then an editor plugin's select-pane -R goes on into the dock
+    h.send("\x08");
+    h.send("echo WIN$((1+2))\r");
+    h.wait_text("WIN3").await;
+    assert!(column_of(&h.text(), "WIN3").unwrap() < 60, "{}", h.text());
+    h.send("$DTM_BIN select-pane -R; echo SYNC$((10+1))\r");
+    h.wait_text("SYNC11").await;
+    h.send("echo IN$((2+2))\r");
+    h.wait_text("IN4").await;
+    assert!(column_of(&h.text(), "IN4").unwrap() > 60, "{}", h.text());
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}

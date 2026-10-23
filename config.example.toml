@@ -16,7 +16,9 @@ clipboard = true        # copy-mode yanks also go to the terminal clipboard (OSC
 # dtm moving pane focus. See "Navigating with Ctrl-h/j/k/l" in the README.
 navigator_apps = []
 repeat_time = 1000      # ms after a resize during which plain h/j/k/l (see [keys.resize])
-                        # keep resizing, so you don't need the prefix every time; 0 = off
+                        # keep resizing, so you don't need the prefix every time; 0 = off.
+                        # Also how long Ctrl-Tab presses keep stepping further back.
+window_focus = "top-left"  # pane focused when you switch to a window: top-left | last
 
 [sidebar]
 position = "left"       # left | right
@@ -90,6 +92,10 @@ height = "80%"
 "C-j" = "navigate-down"
 "C-k" = "navigate-up"
 "C-l" = "navigate-right"
+# Windows in the order you last opened them. Your terminal must send Ctrl-Tab as
+# ESC[9;5u (see "Recent windows" in the README).
+"C-Tab" = "recent-window"
+"C-S-Tab" = "recent-window-reverse"
 # "C-\\" = "navigate-last"   # previous pane (not bound by default: it is SIGQUIT)
 # "M-n" = "next-window"
 # "M-p" = "prev-window"

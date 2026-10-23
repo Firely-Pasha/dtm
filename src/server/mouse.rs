@@ -198,7 +198,7 @@ impl Server {
         match mode {
             SidebarMode::Windows => {
                 let sid = self.sessions[si].id;
-                self.select_window(sid, idx);
+                self.open_window(sid, idx);
             }
             SidebarMode::Sessions => {
                 let id = self.sessions[idx].id;

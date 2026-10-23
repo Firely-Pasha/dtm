@@ -53,6 +53,8 @@ pub struct Config {
     pub repeat_time: u64,
     /// Extra program names (besides vim, nvim, fzf, ...) that get Ctrl-h/j/k/l themselves.
     pub navigator_apps: Vec<String>,
+    /// Switching to another window focuses its top-left pane (false: the pane focused last).
+    pub focus_top_left: bool,
     pub sidebar: SidebarCfg,
     pub popup: PopupCfg,
     pub prefix_keys: HashMap<KeyCombo, Action>,
@@ -88,6 +90,14 @@ struct RawOptions {
     clipboard: Option<bool>,
     repeat_time: Option<u64>,
     navigator_apps: Option<Vec<String>>,
+    window_focus: Option<WindowFocus>,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum WindowFocus {
+    TopLeft,
+    Last,
 }
 
 #[derive(Deserialize, Default)]
@@ -174,6 +184,8 @@ const DEFAULT_ROOT_KEYS: &[(&str, &str)] = &[
     ("C-j", "navigate-down"),
     ("C-k", "navigate-up"),
     ("C-l", "navigate-right"),
+    ("C-Tab", "recent-window"),
+    ("C-S-Tab", "recent-window-reverse"),
 ];
 
 const DEFAULT_RESIZE_KEYS: &[(&str, &str)] = &[
@@ -269,6 +281,7 @@ impl Default for Config {
             clipboard: true,
             repeat_time: 1000,
             navigator_apps: Vec::new(),
+            focus_top_left: true,
             sidebar: SidebarCfg {
                 position: Position::Left,
                 width: 24,
@@ -327,6 +340,9 @@ impl Config {
         }
         if let Some(a) = raw.options.navigator_apps {
             cfg.navigator_apps = a;
+        }
+        if let Some(f) = raw.options.window_focus {
+            cfg.focus_top_left = f == WindowFocus::TopLeft;
         }
         let sb = &mut cfg.sidebar;
         if let Some(v) = raw.sidebar.position {
@@ -387,7 +403,9 @@ mod tests {
         assert_eq!(c.sidebar.position, Position::Left);
         assert_eq!(c.sidebar.default_mode, SidebarMode::Windows);
         assert!(c.sidebar.follow);
-        assert!(c.mouse && c.clipboard);
+        assert!(c.mouse && c.clipboard && c.focus_top_left);
+        assert_eq!(c.root_keys[&(Key::Tab, CTRL)], Action::RecentWindow(true));
+        assert_eq!(Config::from_toml("[options]\nwindow_focus = \"last\"").map(|c| c.focus_top_left), Ok(false));
         assert_eq!(c.prefix_keys[&(Key::Char('['), 0)], Action::CopyMode);
         assert_eq!(c.copy_keys[&(Key::Char('v'), 0)], Action::Copy(CopyCmd::Select));
     }

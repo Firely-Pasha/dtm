@@ -66,7 +66,7 @@ impl Server {
         if open {
             c.sidebar_focus = None;
             if let Some(&wi) = rows.get(sel) {
-                self.select_window(sid, wi);
+                self.open_window(sid, wi);
             }
         } else if let Some(origin) = search.map(|s| s.origin) {
             c.sidebar_focus = Some(origin);

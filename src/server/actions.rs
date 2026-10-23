@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::copy::{base64, CopyMode, Outcome};
 use super::layout::{neighbor, Axis, Node, PaneId, Rect};
-use super::state::{ClientId, Dock, Extra, Pane, PaneSpec, Prompt, PromptKind, Session, SessionId, Window};
+use super::state::{ClientId, Cycle, Dock, Extra, Pane, PaneSpec, Prompt, PromptKind, Session, SessionId, Window, WindowId};
 use super::{Event, Server};
 use crate::action::{Action, CopyCmd, Dir, SidebarCmd};
 use crate::config::{Position, SidebarMode};
@@ -101,6 +101,7 @@ impl Server {
             popup: None,
             popup_shown: false,
             sidebar_w: None,
+            recent: Vec::new(),
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;
@@ -128,7 +129,7 @@ impl Server {
         s.windows.push(window);
         let wi = s.windows.len() - 1;
         self.refresh_name(si, wi);
-        self.select_window(sid, wi);
+        self.open_window(sid, wi);
         Ok(())
     }
 
@@ -162,6 +163,7 @@ impl Server {
 
     // ---- selection ----
 
+    /// Show window `wi` without counting it as opened (the sidebar following its selection).
     pub fn select_window(&mut self, sid: SessionId, wi: usize) {
         let Some(s) = self.sessions.iter_mut().find(|s| s.id == sid) else { return };
         if wi >= s.windows.len() {
@@ -173,11 +175,94 @@ impl Server {
         w.bell = false;
     }
 
+    /// Open window `wi`: show it, focus its top-left pane if it is another window, and remember it.
+    pub fn open_window(&mut self, sid: SessionId, wi: usize) {
+        let Some(si) = self.session_index(sid) else { return };
+        let s = &self.sessions[si];
+        let Some(id) = s.windows.get(wi).map(|w| w.id) else { return };
+        // A window the sidebar is already showing still counts as another one until it is opened.
+        let changed = s.active != wi || s.recent.first().is_some_and(|&r| r != id);
+        self.select_window(sid, wi);
+        if changed {
+            self.focus_top_left(si, wi);
+        }
+        self.remember_window(si, id);
+    }
+
+    fn focus_top_left(&mut self, si: usize, wi: usize) {
+        let w = &mut self.sessions[si].windows[wi];
+        if !self.cfg.focus_top_left || w.zoomed {
+            return;
+        }
+        let first = w.root.first_leaf();
+        w.focus(first);
+        self.refresh_name(si, wi);
+    }
+
+    fn remember_window(&mut self, si: usize, id: WindowId) {
+        let recent = &mut self.sessions[si].recent;
+        recent.retain(|&w| w != id);
+        recent.insert(0, id);
+    }
+
     fn step_window(&mut self, sid: SessionId, forward: bool) {
         let Some(s) = self.sessions.iter().find(|s| s.id == sid) else { return };
         let n = s.windows.len();
         let wi = if forward { (s.active + 1) % n } else { (s.active + n - 1) % n };
-        self.select_window(sid, wi);
+        self.open_window(sid, wi);
+    }
+
+    /// Ctrl-Tab: the next window back in the order they were opened. Presses within the
+    /// repeat time keep going further back; after that the shown window counts as opened.
+    fn recent_window(&mut self, cid: ClientId, si: usize, back: bool) {
+        let expired = self.clients.get(&cid).and_then(|c| c.cycle_until).is_none_or(|t| Instant::now() >= t);
+        if expired {
+            self.end_cycle(cid);
+        }
+        let s = &self.sessions[si];
+        let exists = |id: &WindowId| s.windows.iter().any(|w| w.id == *id);
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let cycle = c.cycle.get_or_insert_with(|| {
+            // The shown window, then the opened ones, then any never opened.
+            let mut list = vec![s.windows[s.active].id];
+            for id in s.recent.iter().copied().filter(exists).chain(s.windows.iter().map(|w| w.id)) {
+                if !list.contains(&id) {
+                    list.push(id);
+                }
+            }
+            Cycle { list, idx: 0 }
+        });
+        cycle.list.retain(exists);
+        let n = cycle.list.len();
+        if n < 2 {
+            c.cycle = None;
+            return;
+        }
+        cycle.idx = if back { (cycle.idx + 1) % n } else { (cycle.idx + n - 1) % n };
+        let id = cycle.list[cycle.idx];
+        let repeat = self.cfg.repeat_time;
+        c.cycle_until = Some(Instant::now() + Duration::from_millis(repeat));
+        let sid = s.id;
+        if let Some(wi) = s.windows.iter().position(|w| w.id == id) {
+            let changed = wi != s.active;
+            self.select_window(sid, wi);
+            if changed {
+                self.focus_top_left(si, wi);
+            }
+        }
+    }
+
+    /// Finish a recent-window cycle: the window it left shown counts as opened.
+    pub(super) fn end_cycle(&mut self, cid: ClientId) {
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let (Some(cycle), Some(sid)) = (c.cycle.take(), c.session) else { return };
+        c.cycle_until = None;
+        let Some(si) = self.session_index(sid) else { return };
+        let s = &self.sessions[si];
+        let shown = s.windows[s.active].id;
+        if cycle.list.get(cycle.idx) == Some(&shown) {
+            self.remember_window(si, shown);
+        }
     }
 
     // ---- teardown ----
@@ -307,9 +392,13 @@ impl Server {
                 Ok(())
             },
             Action::SelectWindow(n) => {
-                self.select_window(sid, n - 1);
+                self.open_window(sid, n - 1);
                 Ok(())
             },
+            Action::RecentWindow(back) => {
+                self.recent_window(cid, si, back);
+                Ok(())
+            }
             Action::RenameWindow => {
                 let w = self.sessions[si].active_window();
                 let (id, text) = (w.id, w.name().to_string());
@@ -875,8 +964,10 @@ impl Server {
     }
 
     /// Switch the client to the window or session at sidebar row `idx`.
-    fn show_sidebar_item(&mut self, cid: ClientId, sid: SessionId, mode: SidebarMode, idx: usize) {
+    /// Show the sidebar's item `idx`; `open` when it was chosen rather than just moved to.
+    fn show_sidebar_item(&mut self, cid: ClientId, sid: SessionId, mode: SidebarMode, idx: usize, open: bool) {
         match mode {
+            SidebarMode::Windows if open => self.open_window(sid, idx),
             SidebarMode::Windows => self.select_window(sid, idx),
             SidebarMode::Sessions => {
                 if let Some(id) = self.sessions.get(idx).map(|s| s.id)
@@ -902,13 +993,13 @@ impl Server {
                 let to = if cmd == SidebarCmd::Down { (sel + 1).min(count - 1) } else { sel.saturating_sub(1) };
                 self.set_sidebar_focus(cid, Some(to));
                 if self.cfg.sidebar.follow {
-                    self.show_sidebar_item(cid, sid, mode, to);
+                    self.show_sidebar_item(cid, sid, mode, to, false);
                 }
             }
             SidebarCmd::Leave => self.set_sidebar_focus(cid, None),
             SidebarCmd::Open => {
                 self.set_sidebar_focus(cid, None);
-                self.show_sidebar_item(cid, sid, mode, sel);
+                self.show_sidebar_item(cid, sid, mode, sel, true);
             }
             SidebarCmd::Kill => match mode {
                 SidebarMode::Windows => {
@@ -964,7 +1055,7 @@ impl Server {
                     }
                     self.set_sidebar_focus(cid, Some(to));
                     if self.cfg.sidebar.follow {
-                        self.show_sidebar_item(cid, sid, mode, to);
+                        self.show_sidebar_item(cid, sid, mode, to, false);
                     }
                 }
             }
