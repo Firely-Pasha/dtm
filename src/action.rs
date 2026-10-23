@@ -103,6 +103,8 @@ pub enum Action {
     ExportProject,
     /// Focus the sidebar and filter its windows by typing.
     SearchWindows,
+    /// The focused pane (window, dock or popup) or sidebar fills the whole terminal.
+    ToggleMaximize,
     /// Show or hide the popup shell (it keeps running while hidden).
     TogglePopup,
     ToggleDock,
@@ -207,6 +209,7 @@ impl FromStr for Action {
             "respawn-window" => no_arg(Action::RespawnWindow),
             "export-project" => no_arg(Action::ExportProject),
             "search-windows" => no_arg(Action::SearchWindows),
+            "toggle-maximize" => no_arg(Action::ToggleMaximize),
             "toggle-popup" => no_arg(Action::TogglePopup),
             "toggle-dock" => no_arg(Action::ToggleDock),
             "focus-dock" => no_arg(Action::FocusDock),

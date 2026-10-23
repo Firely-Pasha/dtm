@@ -77,6 +77,7 @@ height = "80%"
 "M-r" = "respawn-window"      # restart the window from its project layout (asks y/n)
 "f" = "search-windows"        # filter the sidebar's windows by typing (fuzzy)
 "/" = "search-windows"
+"m" = "toggle-maximize"       # the focused pane, dock pane, popup or sidebar fills the terminal
 "Tab" = "recent-window"       # the window opened before; then plain Tab / Shift-Tab keep
 "S-Tab" = "recent-window-reverse"  # stepping further back / forward for repeat_time
 "P" = "toggle-popup"          # show/hide the popup shell; <prefix> x kills it while shown

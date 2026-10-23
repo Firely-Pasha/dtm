@@ -138,6 +138,10 @@ pub struct Session {
     pub sidebar_w: Option<u16>,
     /// Windows in the order they were last opened, most recent first.
     pub recent: Vec<WindowId>,
+    /// The pane filling the whole terminal (toggle-maximize), if any.
+    pub maximized: Option<PaneId>,
+    /// The owner client's whole terminal, which a maximized pane gets.
+    pub full_size: (u16, u16),
 }
 
 impl Session {
@@ -229,6 +233,8 @@ pub struct Client {
     pub cycle: Option<Cycle>,
     /// Further recent-window presses until this moment go on with the cycle.
     pub cycle_until: Option<Instant>,
+    /// The focused sidebar fills the whole terminal.
+    pub sidebar_max: bool,
     /// Plain resize keys are accepted until this moment.
     pub resize_until: Option<Instant>,
     pub prev: Option<Canvas>,
@@ -254,6 +260,7 @@ impl Client {
             search: None,
             cycle: None,
             cycle_until: None,
+            sidebar_max: false,
             resize_until: None,
             prev: None,
             last_active: Instant::now(),

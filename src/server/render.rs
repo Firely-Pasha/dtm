@@ -109,7 +109,7 @@ pub fn dock_tabs(names: &[&str], active: usize, width: usize) -> Vec<(usize, usi
     out
 }
 
-fn draw_pane_view(canvas: &mut Canvas, pane: &Pane, area: (usize, usize, usize, usize), focused: bool) -> Option<(usize, usize)> {
+pub(super) fn draw_pane_view(canvas: &mut Canvas, pane: &Pane, area: (usize, usize, usize, usize), focused: bool) -> Option<(usize, usize)> {
     let (x, y, w, h) = area;
     match &pane.copy {
         Some(copy) => {

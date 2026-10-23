@@ -446,8 +446,10 @@ impl Server {
         let size = self.content_size(owner);
         let dw = self.client_dock_width(c);
         let rows = c.rows;
+        let full = (c.cols, c.rows);
         let Some(s) = self.sessions.iter_mut().find(|s| s.id == sid) else { return };
         s.size = size;
+        s.full_size = full;
         if dw > 0 {
             s.dock_size = ((dw - 1).max(1), rows.saturating_sub(1).max(1));
         }
@@ -470,6 +472,10 @@ impl Server {
         if let Some(p) = s.popup {
             let r = self.popup_inner(s.size);
             jobs.push((p, r.w, r.h));
+        }
+        if let Some(p) = s.maximized.filter(|_| s.full_size.0 > 0 && s.full_size.1 > 0) {
+            // Applied last, so it wins over the pane's normal size.
+            jobs.push((p, s.full_size.0, s.full_size.1));
         }
         for (id, w, h) in jobs {
             if let Some(p) = self.panes.get_mut(&id) {
@@ -585,6 +591,25 @@ impl Server {
     }
 
     /// Keep each client's sidebar selection inside its list.
+    /// A maximized pane or sidebar ends when focus moves away from it.
+    fn sync_maximized(&mut self) {
+        let stale: Vec<SessionId> = self
+            .sessions
+            .iter()
+            .filter(|s| s.maximized.is_some() && s.maximized != self.focused_pane_in(s))
+            .map(|s| s.id)
+            .collect();
+        for sid in stale {
+            if let Some(s) = self.sessions.iter_mut().find(|s| s.id == sid) {
+                s.maximized = None;
+            }
+            self.relayout(sid);
+        }
+        for c in self.clients.values_mut().filter(|c| c.sidebar_focus.is_none()) {
+            c.sidebar_max = false;
+        }
+    }
+
     fn clamp_sidebar_focus(&mut self) {
         let counts: Vec<(ClientId, usize)> = self
             .clients
@@ -610,6 +635,7 @@ impl Server {
         self.render_at = None;
         self.start_visible_windows();
         self.clamp_sidebar_focus();
+        self.sync_maximized();
         let mut contents: HashMap<SessionId, Canvas> = HashMap::new();
         let mut frames: Vec<(ClientId, Canvas)> = Vec::new();
         for c in self.clients.values() {
@@ -709,6 +735,9 @@ impl Server {
 
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {
         let (cols, rows) = (c.cols as usize, c.rows as usize);
+        if let Some(p) = s.maximized.and_then(|p| self.panes.get(&p)) {
+            return self.compose_maximized(c, p);
+        }
         let sw = self.sidebar_width(c) as usize;
         let dw = self.dock_width(c, s) as usize;
         let mut canvas = Canvas::new(cols, rows);
@@ -771,10 +800,36 @@ impl Server {
                 render::draw_badge(&mut canvas, (x, y, bw, bh), &text);
             }
         }
-        if let Some(p) = &c.prompt {
-            // Prompts are a box in the middle of the screen, over everything.
-            canvas.cursor = render::draw_prompt(&mut canvas, &p.label, &p.text, p.kind.is_confirm());
+        if c.sidebar_max && c.sidebar_focus.is_some() {
+            sidebar::draw(&mut canvas, 0, cols, Position::Left, &view);
         }
+        self.draw_prompt_box(c, &mut canvas);
+        canvas
+    }
+
+    /// Prompts are a box in the middle of the screen, over everything.
+    fn draw_prompt_box(&self, c: &Client, canvas: &mut Canvas) {
+        if let Some(p) = &c.prompt {
+            canvas.cursor = render::draw_prompt(canvas, &p.label, &p.text, p.kind.is_confirm());
+        }
+    }
+
+    /// One pane over the whole terminal.
+    fn compose_maximized(&self, c: &Client, pane: &Pane) -> Canvas {
+        let (cols, rows) = (c.cols as usize, c.rows as usize);
+        let mut canvas = Canvas::new(cols, rows);
+        canvas.cursor = render::draw_pane_view(&mut canvas, pane, (0, 0, cols, rows), true);
+        let m = pane.screen.modes();
+        canvas.app_cursor = m.app_cursor;
+        canvas.bracketed_paste = m.bracketed_paste;
+        canvas.cursor_style = m.cursor_style;
+        canvas.mouse = self.cfg.mouse;
+        if let Some((text, _)) = &c.message {
+            let attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
+            canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
+            canvas.put_str(0, rows - 1, text, attrs, cols);
+        }
+        self.draw_prompt_box(c, &mut canvas);
         canvas
     }
 }

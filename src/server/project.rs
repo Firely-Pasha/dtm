@@ -109,6 +109,8 @@ impl Server {
             popup_shown: false,
             sidebar_w: plan.sidebar_width,
             recent: Vec::new(),
+            maximized: None,
+            full_size: (0, 0),
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;

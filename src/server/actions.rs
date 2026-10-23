@@ -102,6 +102,8 @@ impl Server {
             popup_shown: false,
             sidebar_w: None,
             recent: Vec::new(),
+            maximized: None,
+            full_size: (0, 0),
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;
@@ -395,6 +397,23 @@ impl Server {
                 self.open_window(sid, n - 1);
                 Ok(())
             },
+            Action::ToggleMaximize => {
+                if let Some(c) = self.clients.get_mut(&cid)
+                    && c.sidebar_focus.is_some()
+                {
+                    c.sidebar_max = !c.sidebar_max;
+                } else {
+                    let focused = self.focused_pane(si);
+                    let full = self.clients.get(&cid).map(|c| (c.cols, c.rows));
+                    let s = &mut self.sessions[si];
+                    if let Some(full) = full {
+                        s.full_size = full;
+                    }
+                    s.maximized = if s.maximized.is_some() { None } else { focused };
+                    self.relayout(sid);
+                }
+                Ok(())
+            }
             Action::RecentWindow(back) => {
                 // Each prefix press starts over; plain Tab (and a root binding) go on.
                 if trigger.prefix.is_some() {

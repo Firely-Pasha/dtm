@@ -1643,3 +1643,62 @@ async fn prefix_tab_steps_back_and_plain_tab_keeps_stepping() {
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
+
+#[tokio::test]
+async fn maximize_fills_the_terminal_with_a_pane_dock_pane_popup_or_sidebar() {
+    let env = Env::new("maximize", "");
+    let mut h = env.client(&[], 120, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+
+    // a window pane
+    h.send(&format!("{CTRL_A}m"));
+    h.wait_for("sidebar gone", |t| !t.contains("1 sh")).await;
+    h.send("echo COLS$(tput cols)\r");
+    h.wait_text("COLS120").await;
+    h.send(&format!("{CTRL_A}m"));
+    h.wait_text("1 sh").await;
+    h.send("echo COLS$(tput cols)x\r");
+    h.wait_for("narrower again", |t| t.contains("COLS59x") || t.contains("COLS58x") || t.contains("COLS47x") || t.contains("COLS48x")).await;
+
+    // moving focus ends it
+    h.send(&format!("{CTRL_A}m"));
+    h.wait_for("sidebar gone", |t| !t.contains("1 sh")).await;
+    h.send("\x08");
+    h.wait_text("1 sh").await;
+
+    // a dock pane
+    h.send(&format!("{CTRL_A}D"));
+    h.wait_text("no panes").await;
+    h.send(&format!("{CTRL_A}A"));
+    h.wait_text("dock command").await;
+    h.send("\r");
+    h.send(&format!("{CTRL_A}m"));
+    h.wait_for("dock fills the screen", |t| !t.contains("1 sh") && !t.contains("no panes")).await;
+    h.send("echo DOCKCOLS$(tput cols)\r");
+    h.wait_text("DOCKCOLS120").await;
+    h.send(&format!("{CTRL_A}m"));
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}D"));
+    h.wait_for("dock hidden", |t| !t.contains("DOCKCOLS")).await;
+
+    // the popup
+    h.send(&format!("{CTRL_A}P"));
+    h.wait_for("popup border", |t| t.contains('┌')).await;
+    h.send(&format!("{CTRL_A}m"));
+    h.wait_for("popup border gone", |t| !t.contains('┌') && !t.contains("1 sh")).await;
+    h.send("echo POPCOLS$(tput cols)\r");
+    h.wait_text("POPCOLS120").await;
+    h.send(&format!("{CTRL_A}x"));
+    h.wait_text("1 sh").await;
+
+    // the sidebar
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send(&format!("{CTRL_A}m"));
+    h.wait_for("sidebar wide", |t| t.lines().any(|l| l.chars().count() >= 120 && l.ends_with('│'))).await;
+    h.send("q");
+    h.wait_for("sidebar normal", |t| !t.contains(SIDEBAR_HINT) && t.contains("1 sh")).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}

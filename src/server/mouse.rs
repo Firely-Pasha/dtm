@@ -41,6 +41,14 @@ impl Server {
     pub fn handle_mouse(&mut self, cid: ClientId, m: MouseEvent) {
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(si) = c.session.and_then(|sid| self.sessions.iter().position(|s| s.id == sid)) else { return };
+        if c.sidebar_max && c.sidebar_focus.is_some() {
+            return self.sidebar_click(cid, si, m);
+        }
+        if let Some(p) = self.sessions[si].maximized.filter(|p| self.panes.contains_key(p)) {
+            self.pane_mouse(p, &m, m.x as usize, m.y as usize);
+            self.mark_dirty();
+            return;
+        }
         let sw = self.sidebar_width(c) as usize;
         let dw = self.dock_width(c, &self.sessions[si]) as usize;
         let cols = c.cols as usize;

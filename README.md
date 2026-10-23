@@ -41,12 +41,14 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `]` | paste | `a` | send a literal Ctrl-a |
 | `r` | reload config | `R` | respawn pane (asks) |
 | `Alt-r` | respawn window (asks) | `f` or `/` | search windows |
-| `Tab` | previously opened window (then `Tab` / `Shift-Tab` repeat) | | |
+| `Tab` | previously opened window (then `Tab` / `Shift-Tab` repeat) | `m` | maximize / restore |
 | `P` | popup shell (toggle) | `D` | show / hide the dock |
 | `{` / `}` | previous / next dock pane | `A` / `X` | add / close a dock pane |
 
 Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
 (see below).
+
+**Maximize**: `<prefix> m` makes the focused thing fill the whole terminal: a window pane, a dock pane, the popup, or the sidebar (when it has focus). The pane is resized to the full screen, so lazygit or vim redraw at full size. Press it again to restore. Moving focus to something else (or hiding the popup or dock) restores it too. Unlike `z`, which zooms inside the pane area, this hides the sidebar and dock as well.
 
 **Recent windows**: `<prefix> Tab` toggles to the previously opened window; for
 the repeat time after it (`options.repeat_time`, 1 second) plain `Tab` goes
@@ -287,7 +289,7 @@ checked by the test suite to match the built-in defaults.
 - Key notation: `C-a`, `M-h`, `S-Left`, `C-M-x`, `F5`, `PageUp`, `Space`, or a
   single character.
 - Actions: `new-window`, `kill-window`, `next-window`, `prev-window`,
-  `select-window N`, `recent-window`, `recent-window-reverse`, `rename-window`, `split-vertical`, `split-horizontal`,
+  `select-window N`, `toggle-maximize`, `recent-window`, `recent-window-reverse`, `rename-window`, `split-vertical`, `split-horizontal`,
   `focus-left|right|up|down`, `focus-next`, `resize-left|right|up|down [N]`,
   `kill-pane`, `zoom-pane`, `new-session`, `next-session`, `prev-session`,
   `select-session N`, `rename-session`, `toggle-sidebar`,
