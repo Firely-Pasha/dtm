@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use super::copy::CopyMode;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::layout::{PaneId, Rect};
 use super::sidebar::truncate;
@@ -195,6 +195,108 @@ pub fn draw_popup(canvas: &mut Canvas, ox: usize, outer: Rect, pane: Option<&Pan
         canvas.put_str(x + 2, y, " popup ", BORDER_ACTIVE, w - 4);
     }
     draw_pane_view(canvas, pane?, (x + 1, y + 1, w - 2, h - 2), true)
+}
+
+/// Split `text` into lines of at most `width` columns, breaking at spaces.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if l.width() + 1 + word.width() <= width => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    // A word longer than the box is cut by put_str; keep at least one line.
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// The end of `text` that fits in `width` columns.
+fn tail(text: &str, width: usize) -> String {
+    let mut out: Vec<char> = Vec::new();
+    let mut used = 0;
+    for ch in text.chars().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out.iter().rev().collect()
+}
+
+/// Draw a prompt as a box in the middle of the screen; returns the cursor of a text prompt.
+pub fn draw_prompt(canvas: &mut Canvas, label: &str, text: &str, confirm: bool) -> Option<(usize, usize)> {
+    let (cols, rows) = (canvas.cols, canvas.rows);
+    let label = label.trim_end_matches(" (y/n)");
+    let hint = if confirm { "y confirm  ·  n cancel" } else { "enter confirm  ·  esc cancel" };
+    let max_inner = cols.saturating_sub(8).clamp(8, 64);
+    let inner = (label.width().max(hint.width()).max(if confirm { 0 } else { 36 }) + 2).clamp(8, max_inner);
+    let lines = wrap(label, inner - 2);
+    // Padding rows are dropped when the screen is short.
+    let body = lines.len() + usize::from(!confirm) * 2 + 2;
+    let pad = usize::from(rows >= body + 4);
+    let h = body + 2 + pad * 2;
+    let w = inner + 2;
+    if h > rows || w > cols {
+        // Too small for the box: a bar on the bottom row.
+        let attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
+        let line = if confirm { format!(" {label}  (y/n)") } else { format!(" {label}: {text}") };
+        canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
+        let used = canvas.put_str(0, rows - 1, &line, attrs, cols);
+        return (!confirm).then_some((used.min(cols.saturating_sub(1)), rows - 1));
+    }
+    let (x, y) = ((cols - w) / 2, (rows - h) / 2);
+    let edge = |ch| Cell { ch, width: 1, attrs: BORDER_ACTIVE };
+    canvas.fill(x, y, w, h, Cell::BLANK);
+    for dx in 1..w - 1 {
+        canvas.set(x + dx, y, edge('─'));
+        canvas.set(x + dx, y + h - 1, edge('─'));
+    }
+    for dy in 1..h - 1 {
+        canvas.set(x, y + dy, edge('│'));
+        canvas.set(x + w - 1, y + dy, edge('│'));
+    }
+    canvas.set(x, y, edge('╭'));
+    canvas.set(x + w - 1, y, edge('╮'));
+    canvas.set(x, y + h - 1, edge('╰'));
+    canvas.set(x + w - 1, y + h - 1, edge('╯'));
+    let bold = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD };
+    let (tx, mut ty) = (x + 2, y + 1 + pad);
+    for l in &lines {
+        canvas.put_str(tx, ty, l, bold, inner - 2);
+        ty += 1;
+    }
+    ty += 1;
+    let mut cursor = None;
+    if !confirm {
+        let shown = tail(text, inner - 5);
+        canvas.put_str(tx, ty, "›", BORDER_ACTIVE, 1);
+        let used = canvas.put_str(tx + 2, ty, &shown, Attrs::DEFAULT, inner - 4);
+        cursor = Some((tx + 2 + used, ty));
+        ty += 2;
+    }
+    canvas.put_str(tx, ty, hint, DIM, inner - 2);
+    // The keys themselves stand out.
+    let (first, second) = if confirm { (1, 1) } else { ("enter".len(), "esc".len()) };
+    let second_at = tx + hint.find("·").map_or(0, |i| hint[..i].width() + "·  ".width());
+    restyle(canvas, tx, ty, first, bold);
+    restyle(canvas, second_at, ty, second, bold);
+    cursor
+}
+
+fn restyle(canvas: &mut Canvas, x: usize, y: usize, n: usize, attrs: Attrs) {
+    for i in 0..n {
+        let mut cell = *canvas.cell(x + i, y);
+        cell.attrs = attrs;
+        canvas.set(x + i, y, cell);
+    }
 }
 
 /// Draw a pane scrolled back in copy mode, with the selection highlighted.

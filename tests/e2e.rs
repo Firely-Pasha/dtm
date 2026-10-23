@@ -111,7 +111,7 @@ async fn windows_sidebar_modes_and_rename() {
     assert!(h.text().contains("1 sh"));
 
     h.send(&format!("{CTRL_A},"));
-    h.wait_text("rename window: sh").await;
+    h.wait_text("› sh").await;
     h.send("\x7f\x7f");
     h.send("editor\r");
     h.wait_text("2 editor").await;
@@ -125,7 +125,7 @@ async fn windows_sidebar_modes_and_rename() {
     h.wait_text("2 editor").await;
 
     h.send(&format!("{CTRL_A}$"));
-    h.wait_text("rename session: work").await;
+    h.wait_text("› work").await;
     h.send("\x1b");
     h.wait_for("prompt cancelled", |t| !t.contains("rename session")).await;
 
@@ -460,27 +460,34 @@ async fn rename_window(h: &mut Harness, new: &str, old_len: usize) {
 }
 
 #[tokio::test]
-async fn prompts_span_the_whole_bottom_row() {
-    let env = Env::new("promptbar", "");
+async fn prompts_are_a_box_in_the_middle_of_the_screen() {
+    let env = Env::new("promptbox", "");
     let mut h = env.client(&[], 100, 30);
     h.wait_text("1 sh").await;
     h.send(&format!("{CTRL_A},"));
-    h.wait_text("rename window: sh").await;
-    let row = h.screen.row_text(29);
-    assert!(row.starts_with(" rename window: sh"), "{row:?}");
-    // the bar covers the sidebar column and the pane area, edge to edge
-    for x in [0, 10, 23, 24, 60, 99] {
-        assert!(h.screen.cell(x, 29).attrs.has(dtm::term::cell::flags::REVERSE), "column {x}");
-    }
-    assert_eq!(h.screen.cursor_pos().1, 29);
+    h.wait_text("› sh").await;
+    let text = h.text();
+    let lines: Vec<&str> = text.lines().collect();
+    let at = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap();
+    let (label, input, hint) = (at("rename window"), at("› sh"), at("enter confirm"));
+    assert!(label > 8 && hint < 21, "centered vertically: rows {label}..{hint}");
+    assert!(lines[label - 2].contains('╭') && lines[hint + 2].contains('╰'), "{text}");
+    assert!(!lines[29].contains("rename"), "nothing on the bottom row:\n{text}");
+    let col = lines[input].chars().position(|c| c == '›').unwrap();
+    assert!((20..60).contains(&col), "centered horizontally: {col}");
+    assert_eq!(h.screen.cursor_pos().1, input, "the cursor is in the input line");
     h.send("\x1b");
     h.wait_for("closed", |t| !t.contains("rename window")).await;
-    // with the sidebar hidden it is the same bar
-    h.send(&format!("{CTRL_A}b{CTRL_A},"));
-    h.wait_text("rename window").await;
-    assert!(h.screen.row_text(29).starts_with(" rename window"));
-    h.send("\x1b");
-    h.wait_for("closed again", |t| !t.contains("rename window")).await;
+
+    // Confirmations use the same box, and an answer other than y cancels.
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("x");
+    h.wait_text("y confirm").await;
+    assert!(h.text().contains("kill window 1"), "{}", h.text());
+    h.send("x");
+    h.wait_for("closed again", |t| !t.contains("y confirm")).await;
+    h.send("q");
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
@@ -605,13 +612,12 @@ async fn sidebar_manages_windows() {
 
     // kill with confirmation: n cancels, y kills
     h.send("x");
-    h.wait_text("kill window 2 (C)? (y/n)").await;
-    assert!(h.screen.row_text(29).starts_with(" kill window 2 (C)?"));
+    h.wait_text("kill window 2 (C)?").await;
     h.send("n");
-    h.wait_for("cancelled", |t| !t.contains("(y/n)")).await;
+    h.wait_for("cancelled", |t| !t.contains("n cancel")).await;
     assert!(h.text().contains("2 C"));
     h.send("jx");
-    h.wait_text("kill window 3 (B)? (y/n)").await;
+    h.wait_text("kill window 3 (B)?").await;
     h.send("y");
     h.wait_for("B gone", |t| !t.contains("3 B")).await;
     assert!(h.text().contains("1 A") && h.text().contains("2 C"));
@@ -620,7 +626,7 @@ async fn sidebar_manages_windows() {
     h.send("k");
     h.wait_for("window 1 shown", |t| !t.contains("marker42")).await;
     h.send("r");
-    h.wait_text("rename window: A").await;
+    h.wait_text("› A").await;
     h.send("\x7fZ\r");
     h.wait_for("renamed", |t| t.contains("1 Z") && t.contains("2 C")).await;
 
@@ -650,7 +656,7 @@ async fn sidebar_manages_sessions() {
     // select the first session and kill it
     h.send(&format!("{CTRL_A}wk"));
     h.send("x");
-    h.wait_text("kill session 1 (0)? (y/n)").await;
+    h.wait_text("kill session 1 (0)?").await;
     h.send("y");
     h.wait_for("session 0 gone", |t| t.contains("1 1") && !t.contains("2 1")).await;
     let (ok, out) = env.run(&["ls"]);
@@ -660,7 +666,7 @@ async fn sidebar_manages_sessions() {
     h.send("n");
     h.wait_text("2 0").await;
     h.send("r");
-    h.wait_text("rename session: 0").await;
+    h.wait_text("› 0").await;
     h.send("\x7fwork\r");
     h.wait_text("2 work").await;
     h.send("K");
@@ -1116,7 +1122,7 @@ async fn respawn_pane_restarts_it_with_a_new_id() {
     assert!(ok && out.trim() == "1", "{out}");
 
     h.send(&format!("{CTRL_A}R"));
-    h.wait_text("respawn pane? (y/n)").await;
+    h.wait_text("respawn pane?").await;
     h.send("y");
     eventually("second run", || lines(&runs) == 2).await;
     eventually("old process gone", || count_procs(&["sleep", &secs]) == 1).await;
@@ -1126,7 +1132,7 @@ async fn respawn_pane_restarts_it_with_a_new_id() {
     assert!(!ok, "the old pane id must be gone");
     // Answering no changes nothing.
     h.send(&format!("{CTRL_A}R"));
-    h.wait_text("respawn pane? (y/n)").await;
+    h.wait_text("respawn pane?").await;
     h.send("n");
     h.wait_for("prompt closed", |t| !t.contains("respawn pane?")).await;
     assert_eq!(lines(&runs), 2);
@@ -1166,7 +1172,7 @@ async fn respawn_of_a_plain_pane_keeps_its_directory() {
     h.send(&format!("{CTRL_A}|"));
     h.send("cd /tmp\r");
     h.send(&format!("{CTRL_A}R"));
-    h.wait_text("respawn pane? (y/n)").await;
+    h.wait_text("respawn pane?").await;
     h.send("y");
     h.send("echo P$((1+1)); pwd\r");
     h.wait_text("P2").await;
@@ -1221,10 +1227,10 @@ async fn sidebar_export_updates_the_named_project_and_keeps_its_root() {
     h.send("e");
     h.wait_text("export to").await;
     h.send("n");
-    h.wait_for("declined", |t| !t.contains("(y/n)")).await;
+    h.wait_for("declined", |t| !t.contains("n cancel")).await;
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "declining must not write");
     h.send("e");
-    h.wait_text("(y/n)").await;
+    h.wait_text("n cancel").await;
     h.send("y");
     h.wait_text("exported to").await;
     let yaml = std::fs::read_to_string(&file).unwrap();
@@ -1355,7 +1361,7 @@ async fn dock_panes_start_lazily_take_focus_and_can_be_added_closed_and_exported
     h.wait_text("ADDED14").await;
     assert!(dock_tabs(&h.screen.row_text(0)).contains(" echo"), "{}", h.text());
     h.send(&format!("{CTRL_A}X"));
-    h.wait_text("close dock pane echo? (y/n)").await;
+    h.wait_text("close dock pane echo?").await;
     h.send("y");
     h.wait_for("tab closed", |t| t.lines().next().is_some_and(|l| !dock_tabs(l).contains(" echo") && l.contains(" two"))).await;
 

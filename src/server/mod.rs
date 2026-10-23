@@ -31,7 +31,7 @@ use crate::paths;
 use crate::protocol::{decode, encode, framed, AttachMode, ClientMsg, ServerMsg, SessionInfo};
 use crate::pty::PtyEvent;
 use crate::term::canvas::Canvas;
-use crate::term::cell::{flags, Attrs, Cell, Color};
+use crate::term::cell::{Attrs, Cell, Color};
 use layout::PaneId;
 use sidebar::{Footer, Item, SidebarView};
 use state::{Client, ClientId, Pane, Session, SessionId};
@@ -751,12 +751,8 @@ impl Server {
             canvas.cursor = None;
         }
         if let Some(p) = &c.prompt {
-            // Prompts take the whole bottom row, over the sidebar and the panes.
-            let attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
-            let text = if p.kind.is_confirm() { format!(" {}", p.label) } else { format!(" {}: {}", p.label, p.text) };
-            canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
-            let used = canvas.put_str(0, rows - 1, &text, attrs, cols);
-            canvas.cursor = (!p.kind.is_confirm()).then(|| (used.min(cols - 1), rows - 1));
+            // Prompts are a box in the middle of the screen, over everything.
+            canvas.cursor = render::draw_prompt(&mut canvas, &p.label, &p.text, p.kind.is_confirm());
         }
         canvas
     }

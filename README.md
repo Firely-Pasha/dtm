@@ -251,7 +251,7 @@ towards it (`<prefix> Left` from the leftmost pane, or a root binding such as
 renames, `J`/`K` reorder, `n` creates a window or session, `Tab` toggles the
 list, `q` leaves. All of it is configurable in `[keys.sidebar]`.
 
-Prompts (rename, kill confirmation) use a bar across the whole bottom row.
+Prompts (rename, confirmations, the dock command) are a box in the middle of the screen: type and press Enter, or Esc to cancel; confirmations take `y` and cancel on any other key.
 
 ## Configuration
 
