@@ -1383,3 +1383,35 @@ async fn an_empty_dock_can_be_opened_to_add_the_first_pane() {
     h.send(&format!("{CTRL_A}D"));
     h.wait_for("dock hidden", |t| !t.contains("FIRST2")).await;
 }
+
+#[tokio::test]
+async fn prefix_h_l_resize_the_focused_sidebar_and_dock() {
+    let env = Env::new("panel-resize", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: pr\ndock:\n  visible: true\n  width: 40%\n  panes:\n    - command: echo DK\nwindows:\n  - name: main\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text("DK").await;
+    h.wait_cell(23, 5, '│').await; // sidebar separator, width 24
+    h.wait_cell(72, 5, '│').await; // dock separator, width 48
+
+    // Sidebar on the left: l grows it, h shrinks it.
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send(&format!("{CTRL_A}l"));
+    h.wait_cell(28, 5, '│').await;
+    h.send(&format!("{CTRL_A}h"));
+    h.wait_cell(23, 5, '│').await;
+    h.send("q");
+    h.wait_for("sidebar left", |t| !t.contains(SIDEBAR_HINT)).await;
+
+    // Dock on the right: h grows it, l shrinks it.
+    h.send("\x0c");
+    h.wait_cursor("in the dock", |x, _| x > 72).await;
+    h.send(&format!("{CTRL_A}h"));
+    h.wait_cell(67, 5, '│').await;
+    h.send(&format!("{CTRL_A}l"));
+    h.wait_cell(72, 5, '│').await;
+}

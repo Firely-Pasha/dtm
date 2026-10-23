@@ -407,7 +407,7 @@ impl Server {
     // ---- sizing ----
 
     pub fn sidebar_width(&self, c: &Client) -> u16 {
-        let w = self.cfg.sidebar.width;
+        let w = c.sidebar_w.unwrap_or(self.cfg.sidebar.width);
         if c.sidebar_visible && c.cols >= w + MIN_CONTENT { w } else { 0 }
     }
 

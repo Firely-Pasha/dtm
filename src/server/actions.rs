@@ -331,7 +331,9 @@ impl Server {
                 Ok(())
             },
             Action::Resize(dir, n) => {
-                self.resize_pane(si, dir, n);
+                if !self.resize_panel(cid, si, dir, n) {
+                    self.resize_pane(si, dir, n);
+                }
                 let repeat = self.cfg.repeat_time;
                 if let Some(c) = self.clients.get_mut(&cid) {
                     c.resize_until = (repeat > 0).then(|| Instant::now() + Duration::from_millis(repeat));
@@ -677,6 +679,45 @@ impl Server {
         }
         let wi = self.sessions[si].active;
         self.refresh_name(si, wi);
+    }
+
+    /// Resize the focused sidebar or dock instead of a pane. False when neither has focus.
+    fn resize_panel(&mut self, cid: ClientId, si: usize, dir: Dir, n: u16) -> bool {
+        let Some(c) = self.clients.get(&cid) else { return false };
+        let sidebar = c.sidebar_focus.is_some();
+        let s = &self.sessions[si];
+        if !sidebar && !(s.dock.focused && s.shown_dock_pane().is_some()) {
+            return false;
+        }
+        let sid = s.id;
+        // The edge facing the panes moves the way the key points.
+        let sidebar_left = self.cfg.sidebar.position == Position::Left;
+        let grow = match dir {
+            Dir::Right => sidebar_left == sidebar,
+            Dir::Left => sidebar_left != sidebar,
+            _ => return true,
+        };
+        let step = |w: u16| if grow { w.saturating_add(n) } else { w.saturating_sub(n) };
+        let sw = self.sidebar_width(c);
+        let dw = self.dock_width(c, s);
+        let cols = c.cols;
+        if sidebar {
+            let max = cols.saturating_sub(super::MIN_CONTENT + dw).max(4);
+            let w = step(sw).clamp(4, max.min(200));
+            if let Some(c) = self.clients.get_mut(&cid) {
+                c.sidebar_w = Some(w);
+            }
+        } else {
+            let max = cols.saturating_sub(sw + super::MIN_CONTENT).max(super::MIN_DOCK);
+            let w = step(dw).clamp(super::MIN_DOCK, max);
+            let d = &mut self.sessions[si].dock;
+            d.width = match d.width {
+                crate::project::Size::Percent(_) => crate::project::Size::Percent(f32::from(w) * 100.0 / f32::from(cols)),
+                crate::project::Size::Cells(_) => crate::project::Size::Cells(w),
+            };
+        }
+        self.update_session_size(sid);
+        true
     }
 
     fn resize_pane(&mut self, si: usize, dir: Dir, n: u16) {
