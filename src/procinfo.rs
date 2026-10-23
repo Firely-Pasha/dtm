@@ -26,6 +26,7 @@ pub fn parse_stat(line: &str) -> Option<Proc> {
 }
 
 /// Command names of the live (not stopped, dead or zombie) members of a process group.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn group_commands(pgrp: i32) -> Vec<String> {
     let Ok(dir) = std::fs::read_dir("/proc") else { return Vec::new() };
     dir.flatten()

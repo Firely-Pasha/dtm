@@ -139,14 +139,13 @@ impl Pty {
 
     /// Working directory of the foreground process (falling back to the shell).
     pub fn cwd(&self) -> Option<PathBuf> {
-        let from = |pid: i32| std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
-        self.foreground_pgrp().and_then(from).or_else(|| from(self.pid as i32))
+        self.foreground_pgrp().and_then(crate::sysproc::cwd).or_else(|| crate::sysproc::cwd(self.pid as i32))
     }
 
     /// Command names of the live processes in the pane's foreground process group.
     pub fn foreground_commands(&self) -> Vec<String> {
         match self.foreground_pgrp() {
-            Some(pg) => crate::procinfo::group_commands(pg),
+            Some(pg) => crate::sysproc::group_commands(pg),
             None => Vec::new(),
         }
     }
@@ -154,17 +153,14 @@ impl Pty {
     /// Command line of the foreground job, or `None` while the shell itself is in front.
     pub fn foreground_cmdline(&self) -> Option<String> {
         let pg = self.foreground_pgrp().filter(|&pg| pg != self.pid as i32)?;
-        let raw = std::fs::read(format!("/proc/{pg}/cmdline")).ok()?;
-        let args: Vec<String> =
-            raw.split(|&b| b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        let args = crate::sysproc::cmdline(pg)?;
         (!args.is_empty()).then(|| crate::project::quote_args(&args))
     }
 
     /// Name of the foreground process.
     pub fn process_name(&self) -> Option<String> {
         let pg = self.foreground_pgrp().unwrap_or(self.pid as i32);
-        let s = std::fs::read_to_string(format!("/proc/{pg}/comm")).ok()?;
-        Some(s.trim().to_string())
+        crate::sysproc::name(pg)
     }
 }
 
