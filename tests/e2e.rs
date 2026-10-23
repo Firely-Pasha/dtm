@@ -1501,3 +1501,24 @@ async fn cursor_shape_requests_reach_the_terminal() {
     h.wait_text("SYNC4").await;
     assert_eq!(h.screen.modes().cursor_style, 2);
 }
+
+#[tokio::test]
+async fn export_saves_the_directory_a_pane_changed_to() {
+    let env = Env::new("export-cwd", "");
+    let proj = env.dir.join("proj");
+    std::fs::create_dir_all(proj.join("deep/er")).unwrap();
+    let file = proj.join("project.dtm.yaml");
+    write(&file, "name: ec\nwindows:\n  - name: one\n  - name: two\n    layout:\n      split: columns\n      panes:\n        - {}\n        - {}\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text("1 one").await;
+    h.send("cd deep/er; echo SYNC$((1+1))\r");
+    h.wait_text("SYNC2").await;
+    h.send(&format!("{CTRL_A}2"));
+    h.send("cd deep; echo SYNC$((2+2))\r");
+    h.wait_text("SYNC4").await;
+    let (ok, msg) = env.run(&["export", "-t", "ec"]);
+    assert!(ok, "{msg}");
+    let yaml = std::fs::read_to_string(&file).unwrap();
+    assert!(yaml.contains("path: deep/er"), "{yaml}");
+    assert!(yaml.contains("path: deep\n"), "{yaml}");
+}

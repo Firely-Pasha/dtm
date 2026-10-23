@@ -31,6 +31,8 @@ impl Server {
                 return;
             }
             self.handle_key(cid, ev);
+            // Keys typed right after switching to a lazy window must reach its new panes.
+            self.start_visible_windows();
         }
         let Some(c) = self.clients.get_mut(&cid) else { return };
         if !c.key_buf.is_empty() && !c.flush_scheduled {
