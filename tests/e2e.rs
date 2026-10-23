@@ -1359,3 +1359,19 @@ async fn dock_panes_start_lazily_take_focus_and_can_be_added_closed_and_exported
     assert!(yaml.contains("touch d2"), "{yaml}");
     assert!(!yaml.contains("ADDED"), "{yaml}");
 }
+
+#[tokio::test]
+async fn an_empty_dock_can_be_opened_to_add_the_first_pane() {
+    let env = Env::new("dock-empty", "");
+    let mut h = env.client(&[], 120, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}D"));
+    h.wait_text("no panes").await;
+    h.send(&format!("{CTRL_A}A"));
+    h.wait_text("dock command").await;
+    h.send("echo FIRST$((1+1))\r");
+    h.wait_text("FIRST2").await;
+    assert!(column_of(&h.text(), "FIRST2").unwrap() > 60, "{}", h.text());
+    h.send(&format!("{CTRL_A}D"));
+    h.wait_for("dock hidden", |t| !t.contains("FIRST2")).await;
+}

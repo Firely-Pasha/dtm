@@ -104,18 +104,19 @@ impl Server {
         Ok(d)
     }
 
+    /// An empty dock can be shown too, so panes can be added to it.
     pub fn toggle_dock(&mut self, sid: SessionId) -> Result<(), String> {
-        let d = self.non_empty_dock(sid)?;
+        let d = self.dock_mut(sid)?;
         d.visible = !d.visible;
-        d.focused = d.visible;
+        d.focused = d.visible && !d.entries.is_empty();
         self.update_session_size(sid);
         Ok(())
     }
 
     pub fn focus_dock(&mut self, sid: SessionId) -> Result<(), String> {
-        let d = self.non_empty_dock(sid)?;
+        let d = self.dock_mut(sid)?;
         d.visible = true;
-        d.focused = true;
+        d.focused = !d.entries.is_empty();
         self.update_session_size(sid);
         Ok(())
     }
@@ -156,7 +157,6 @@ impl Server {
         }
         d.active = d.active.min(d.entries.len().saturating_sub(1));
         if d.entries.is_empty() {
-            d.visible = false;
             d.focused = false;
         }
         if let Some(p) = entry.pane {

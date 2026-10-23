@@ -157,6 +157,11 @@ pub fn draw_dock(
     if rows < 2 {
         return None;
     }
+    if dock.entries.is_empty() {
+        canvas.put_str(px + 1, 1, "no panes", DIM, pw.saturating_sub(1));
+        canvas.put_str(px + 1, 2, "prefix A adds one", DIM, pw.saturating_sub(1));
+        return None;
+    }
     match dock.entries.get(dock.active).and_then(|e| e.pane).and_then(|p| panes.get(&p)) {
         Some(pane) => draw_pane_view(canvas, pane, (px, 1, pw, rows - 1), focused),
         None => {

@@ -413,7 +413,7 @@ impl Server {
 
     /// Width of the dock for this client, 0 when hidden, empty or there is no room.
     pub fn dock_width(&self, c: &Client, s: &Session) -> u16 {
-        if !s.dock.visible || s.dock.entries.is_empty() {
+        if !s.dock.visible {
             return 0;
         }
         let avail = c.cols - self.sidebar_width(c);
