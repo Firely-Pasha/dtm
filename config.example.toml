@@ -26,6 +26,11 @@ default_mode = "windows"  # windows | sessions
 follow = true           # moving the selection in the focused sidebar shows that
                         # window/session immediately (false: only on Enter)
 
+# The popup shell (toggle-popup): a floating shell in the current directory.
+[popup]
+width = "80%"           # a percentage of the pane area, or a number of cells
+height = "80%"
+
 # Keys pressed after the prefix. A value of "none" removes a default binding.
 [keys.prefix]
 "c" = "new-window"
@@ -68,6 +73,13 @@ follow = true           # moving the selection in the focused sidebar shows that
 "r" = "reload-config"
 "R" = "respawn-pane"          # restart the pane the way it started (asks y/n)
 "M-r" = "respawn-window"      # restart the window from its project layout (asks y/n)
+"f" = "search-windows"        # filter the sidebar's windows by typing (fuzzy)
+"P" = "toggle-popup"          # show/hide the popup shell; <prefix> x kills it while shown
+"D" = "toggle-dock"           # show/hide the dock (the project's side panel of panes)
+"}" = "dock-next"             # cycle the dock's panes
+"{" = "dock-prev"
+"A" = "dock-add"              # ask for a command and add a pane running it to the dock
+"X" = "dock-close"            # close the dock's current pane (asks y/n)
 # "E" = "export-project"      # write the session to its project file (see `dtm export`)
 
 # Keys that work without the prefix.
@@ -103,6 +115,8 @@ follow = true           # moving the selection in the focused sidebar shows that
 "K" = "sidebar-move-up"
 "n" = "sidebar-new"
 "R" = "sidebar-respawn"      # asks y/n
+"e" = "sidebar-export"        # write the session to its project file
+"/" = "sidebar-search"        # filter windows by typing; Enter opens, Esc cancels
 "Tab" = "toggle-sidebar-mode"
 "q" = "sidebar-leave"
 

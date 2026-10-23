@@ -5,12 +5,14 @@
 
 pub mod actions;
 pub mod copy;
+pub mod extra;
 pub mod input;
 pub mod ipc;
 pub mod mouse;
 pub mod project;
 pub mod layout;
 pub mod render;
+pub mod search;
 pub mod sidebar;
 pub mod state;
 
@@ -24,6 +26,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 use crate::config::{Config, Position, SidebarMode};
+use crate::fuzzy;
 use crate::paths;
 use crate::protocol::{decode, encode, framed, AttachMode, ClientMsg, ServerMsg, SessionInfo};
 use crate::pty::PtyEvent;
@@ -35,6 +38,8 @@ use state::{Client, ClientId, Pane, Session, SessionId};
 
 /// Content narrower than this hides the sidebar.
 const MIN_CONTENT: u16 = 20;
+/// The dock (separator included) is never narrower than this.
+const MIN_DOCK: u16 = 12;
 /// Delay between a state change and the frame being sent.
 const RENDER_DELAY: Duration = Duration::from_millis(8);
 const MESSAGE_TTL: Duration = Duration::from_secs(3);
@@ -346,6 +351,7 @@ impl Server {
         let old = c.session.replace(sid);
         c.prev = None;
         c.prompt = None;
+        c.search = None;
         c.prefix = None;
         if let Some(old) = old.filter(|&o| o != sid) {
             self.client_left(old, cid);
@@ -405,35 +411,66 @@ impl Server {
         if c.sidebar_visible && c.cols >= w + MIN_CONTENT { w } else { 0 }
     }
 
+    /// Width of the dock for this client, 0 when hidden, empty or there is no room.
+    pub fn dock_width(&self, c: &Client, s: &Session) -> u16 {
+        if !s.dock.visible || s.dock.entries.is_empty() {
+            return 0;
+        }
+        let avail = c.cols - self.sidebar_width(c);
+        if avail < MIN_CONTENT + MIN_DOCK {
+            return 0;
+        }
+        crate::project::cells(s.dock.width, c.cols).clamp(MIN_DOCK, avail - MIN_CONTENT)
+    }
+
+    fn client_dock_width(&self, c: &Client) -> u16 {
+        c.session
+            .and_then(|id| self.sessions.iter().find(|s| s.id == id))
+            .map_or(0, |s| self.dock_width(c, s))
+    }
+
     pub fn content_size(&self, cid: ClientId) -> (u16, u16) {
         match self.clients.get(&cid) {
-            Some(c) => (c.cols - self.sidebar_width(c), c.rows),
+            Some(c) => (c.cols - self.sidebar_width(c) - self.client_dock_width(c), c.rows),
             None => (80, 24),
         }
     }
 
     pub fn update_session_size(&mut self, sid: SessionId) {
         let Some(owner) = self.sessions.iter().find(|s| s.id == sid).and_then(|s| s.owner) else { return };
-        if !self.clients.contains_key(&owner) {
-            return;
-        }
+        let Some(c) = self.clients.get(&owner) else { return };
         let size = self.content_size(owner);
+        let dw = self.client_dock_width(c);
+        let rows = c.rows;
         let Some(s) = self.sessions.iter_mut().find(|s| s.id == sid) else { return };
-        if s.size != size {
-            s.size = size;
-            self.relayout(sid);
+        s.size = size;
+        if dw > 0 {
+            s.dock_size = ((dw - 1).max(1), rows.saturating_sub(1).max(1));
         }
+        self.relayout(sid);
     }
 
     /// Resize every pane of a session to match its layout rect.
     pub fn relayout(&mut self, sid: SessionId) {
         let Some(s) = self.sessions.iter().find(|s| s.id == sid) else { return };
-        let jobs: Vec<_> = s.windows.iter().flat_map(|w| w.rects(s.size)).collect();
-        for (id, r) in jobs {
-            if r.w > 0 && r.h > 0
-                && let Some(p) = self.panes.get_mut(&id) {
-                    p.resize(r.w, r.h);
-                }
+        let mut jobs: Vec<(PaneId, u16, u16)> = s
+            .windows
+            .iter()
+            .flat_map(|w| w.rects(s.size))
+            .filter(|(_, r)| r.w > 0 && r.h > 0)
+            .map(|(id, r)| (id, r.w, r.h))
+            .collect();
+        if s.dock.visible {
+            jobs.extend(s.dock.entries.iter().filter_map(|e| e.pane).map(|p| (p, s.dock_size.0, s.dock_size.1)));
+        }
+        if let Some(p) = s.popup {
+            let r = self.popup_inner(s.size);
+            jobs.push((p, r.w, r.h));
+        }
+        for (id, w, h) in jobs {
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.resize(w, h);
+            }
         }
     }
 
@@ -462,7 +499,12 @@ impl Server {
         if title_changed {
             p.last_title = p.screen.title.clone();
         }
-        let Some((si, wi)) = self.locate(id) else { return };
+        let Some((si, wi)) = self.locate(id) else {
+            if self.extra_of(id).is_some() {
+                self.mark_dirty();
+            }
+            return;
+        };
         let visible = self.sessions[si].active == wi;
         let w = &mut self.sessions[si].windows[wi];
         let mut dirty = visible;
@@ -545,12 +587,12 @@ impl Server {
             .values()
             .filter(|c| c.sidebar_focus.is_some())
             .map(|c| {
-                let n = match (c.sidebar_mode, c.session.and_then(|id| self.sessions.iter().find(|s| s.id == id))) {
-                    (SidebarMode::Windows, Some(s)) => s.windows.len(),
-                    (SidebarMode::Sessions, _) => self.sessions.len(),
-                    _ => 0,
+                let n = match c.session.and_then(|id| self.sessions.iter().find(|s| s.id == id)) {
+                    Some(s) => self.sidebar_rows(c, s).len(),
+                    None => 0,
                 };
-                (c.id, n)
+                // While searching, an empty result list keeps the sidebar focused.
+                (c.id, if c.search.is_some() { n.max(1) } else { n })
             })
             .collect();
         for (id, n) in counts {
@@ -583,14 +625,28 @@ impl Server {
         }
     }
 
+    /// The window or session indices the sidebar lists, in row order.
+    pub fn sidebar_rows(&self, c: &Client, s: &Session) -> Vec<usize> {
+        match (c.sidebar_mode, &c.search) {
+            (SidebarMode::Windows, Some(q)) => {
+                let labels: Vec<String> =
+                    s.windows.iter().enumerate().map(|(i, w)| format!("{} {}", i + 1, w.name())).collect();
+                fuzzy::rank(&q.query, labels.iter().map(String::as_str))
+            }
+            (SidebarMode::Windows, None) => (0..s.windows.len()).collect(),
+            (SidebarMode::Sessions, _) => (0..self.sessions.len()).collect(),
+        }
+    }
+
     fn sidebar_view(&self, c: &Client, s: &Session) -> SidebarView {
         let (header, subheader, items) = match c.sidebar_mode {
             SidebarMode::Windows => {
-                let items = s
-                    .windows
-                    .iter()
+                let mut items: Vec<Item> = self
+                    .sidebar_rows(c, s)
+                    .into_iter()
                     .enumerate()
-                    .map(|(i, w)| {
+                    .map(|(row, i)| {
+                        let w = &s.windows[i];
                         let mut marks = String::new();
                         if w.zoomed {
                             marks.push('Z');
@@ -604,10 +660,19 @@ impl Server {
                         if w.pending {
                             marks.push('…');
                         }
-                        Item { label: format!("{} {}", i + 1, w.name()), marks, active: i == s.active, selected: c.sidebar_focus == Some(i) }
+                        Item { label: format!("{} {}", i + 1, w.name()), marks, active: i == s.active, selected: c.sidebar_focus == Some(row) }
                     })
                     .collect();
-                (s.name.clone(), "windows".to_string(), items)
+                let sub = match &c.search {
+                    Some(q) => {
+                        if items.is_empty() {
+                            items.push(Item { label: "no match".into(), marks: String::new(), active: false, selected: false });
+                        }
+                        format!("/{}", q.query)
+                    }
+                    None => "windows".to_string(),
+                };
+                (s.name.clone(), sub, items)
             }
             SidebarMode::Sessions => {
                 let items = self
@@ -629,8 +694,9 @@ impl Server {
         };
         let footer = match &c.message {
             Some((m, _)) => Some(Footer { text: m.clone(), prompt: false }),
+            None if c.search.is_some() => Some(Footer { text: "⏎ open  esc back".to_string(), prompt: false }),
             None if c.sidebar_focus.is_some() => {
-                Some(Footer { text: "j/k ⏎ x r J/K n q".to_string(), prompt: false })
+                Some(Footer { text: "j/k ⏎ x r n / e q".to_string(), prompt: false })
             }
             None => None,
         };
@@ -640,17 +706,37 @@ impl Server {
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {
         let (cols, rows) = (c.cols as usize, c.rows as usize);
         let sw = self.sidebar_width(c) as usize;
+        let dw = self.dock_width(c, s) as usize;
         let mut canvas = Canvas::new(cols, rows);
-        let (content_x, sidebar_x) = match self.cfg.sidebar.position {
-            Position::Left => (sw, 0),
-            Position::Right => (0, cols - sw),
+        // Left sidebar: [sidebar][content][dock]; right sidebar: [dock][content][sidebar].
+        let (content_x, sidebar_x, dock_x) = match self.cfg.sidebar.position {
+            Position::Left => (sw, 0, cols - dw),
+            Position::Right => (dw, cols - sw, 0),
         };
-        let cw = cols - sw;
+        let cw = cols - sw - dw;
         canvas.blit_canvas(content, content_x, 0, cw, rows);
         canvas.app_cursor = content.app_cursor;
         canvas.bracketed_paste = content.bracketed_paste;
         canvas.mouse = self.cfg.mouse;
         canvas.cursor = content.cursor.filter(|&(x, y)| x < cw && y < rows).map(|(x, y)| (x + content_x, y));
+        if dw > 0 {
+            let focused = s.dock.focused && s.shown_popup().is_none();
+            let cur = render::draw_dock(&mut canvas, (dock_x, dw), self.cfg.sidebar.position == Position::Left, &s.dock, &self.panes, focused);
+            if focused {
+                canvas.cursor = cur;
+            }
+        }
+        if s.shown_popup().is_some() {
+            let pane = s.popup.and_then(|p| self.panes.get(&p));
+            canvas.cursor = render::draw_popup(&mut canvas, content_x, self.popup_outer(s.size), pane);
+        }
+        if self.extra_focused(s)
+            && let Some(p) = self.focused_pane_in(s).and_then(|id| self.panes.get(&id))
+        {
+            let m = p.screen.modes();
+            canvas.app_cursor = m.app_cursor;
+            canvas.bracketed_paste = m.bracketed_paste;
+        }
         let view = self.sidebar_view(c, s);
         if sw > 0 {
             sidebar::draw(&mut canvas, sidebar_x, sw, self.cfg.sidebar.position, &view);

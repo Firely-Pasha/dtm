@@ -3,8 +3,11 @@
 use std::collections::HashMap;
 
 use super::copy::CopyMode;
-use super::layout::PaneId;
-use super::state::{Pane, Window};
+use unicode_width::UnicodeWidthStr;
+
+use super::layout::{PaneId, Rect};
+use super::sidebar::truncate;
+use super::state::{Dock, Pane, Window};
 use crate::term::canvas::Canvas;
 use crate::term::cell::{flags, Attrs, Cell, Color};
 
@@ -78,6 +81,115 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
         }
     }
     canvas
+}
+
+const DIM: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
+const TAB_ACTIVE: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
+
+/// The dock's tab row: (entry, first column, end column) of each tab shown,
+/// scrolled so the active one is visible.
+pub fn dock_tabs(names: &[&str], active: usize, width: usize) -> Vec<(usize, usize, usize)> {
+    let widths: Vec<usize> = names.iter().map(|n| n.width() + 2).collect();
+    let active = active.min(names.len().saturating_sub(1));
+    let mut first = 0;
+    while first < active && widths[first..=active].iter().sum::<usize>() + (active - first) > width {
+        first += 1;
+    }
+    let mut out = Vec::new();
+    let mut x = 0;
+    for (i, w) in widths.iter().enumerate().skip(first) {
+        let w = (*w).min(width.saturating_sub(x));
+        if w < 3 {
+            break;
+        }
+        out.push((i, x, x + w));
+        x += w + 1;
+    }
+    out
+}
+
+fn draw_pane_view(canvas: &mut Canvas, pane: &Pane, area: (usize, usize, usize, usize), focused: bool) -> Option<(usize, usize)> {
+    let (x, y, w, h) = area;
+    match &pane.copy {
+        Some(copy) => {
+            draw_copy_view(canvas, pane, copy, area);
+            (focused && copy.cx < w && copy.cy < h).then_some((x + copy.cx, y + copy.cy))
+        }
+        None => {
+            canvas.blit_screen(&pane.screen, x, y, w, h);
+            let (cx, cy) = pane.screen.cursor_pos();
+            (focused && pane.screen.modes().cursor_visible && cx < w && cy < h).then_some((x + cx, y + cy))
+        }
+    }
+}
+
+/// Draw the dock into columns `x..x+w`; returns the cursor when it has focus.
+/// `sep_left` puts the separator line on the dock's left edge.
+pub fn draw_dock(
+    canvas: &mut Canvas,
+    (x, w): (usize, usize),
+    sep_left: bool,
+    dock: &Dock,
+    panes: &HashMap<PaneId, Pane>,
+    focused: bool,
+) -> Option<(usize, usize)> {
+    let rows = canvas.rows;
+    if w < 2 {
+        return None;
+    }
+    canvas.fill(x, 0, w, rows, Cell::BLANK);
+    let (sep_x, px) = if sep_left { (x, x + 1) } else { (x + w - 1, x) };
+    let pw = w - 1;
+    let sep = if focused { BORDER_ACTIVE } else { BORDER };
+    for y in 0..rows {
+        canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: sep });
+    }
+    let names: Vec<&str> = dock.entries.iter().map(|e| e.name.as_str()).collect();
+    for (i, x0, x1) in dock_tabs(&names, dock.active, pw) {
+        let attrs = if i == dock.active {
+            if focused { Attrs { flags: flags::REVERSE | flags::BOLD, ..TAB_ACTIVE } } else { TAB_ACTIVE }
+        } else {
+            DIM
+        };
+        canvas.fill(px + x0, 0, x1 - x0, 1, Cell::blank(attrs));
+        canvas.put_str(px + x0, 0, &format!(" {} ", truncate(names[i], x1 - x0 - 2)), attrs, x1 - x0);
+    }
+    if rows < 2 {
+        return None;
+    }
+    match dock.entries.get(dock.active).and_then(|e| e.pane).and_then(|p| panes.get(&p)) {
+        Some(pane) => draw_pane_view(canvas, pane, (px, 1, pw, rows - 1), focused),
+        None => {
+            canvas.put_str(px + 1, 1, "starting…", DIM, pw.saturating_sub(1));
+            None
+        }
+    }
+}
+
+/// Draw the popup box at `ox + outer`; returns the cursor.
+pub fn draw_popup(canvas: &mut Canvas, ox: usize, outer: Rect, pane: Option<&Pane>) -> Option<(usize, usize)> {
+    let (x, y, w, h) = (ox + outer.x as usize, outer.y as usize, outer.w as usize, outer.h as usize);
+    if w < 3 || h < 3 {
+        return None;
+    }
+    let edge = |ch| Cell { ch, width: 1, attrs: BORDER_ACTIVE };
+    canvas.fill(x, y, w, h, Cell::BLANK);
+    for dx in 1..w - 1 {
+        canvas.set(x + dx, y, edge('─'));
+        canvas.set(x + dx, y + h - 1, edge('─'));
+    }
+    for dy in 1..h - 1 {
+        canvas.set(x, y + dy, edge('│'));
+        canvas.set(x + w - 1, y + dy, edge('│'));
+    }
+    canvas.set(x, y, edge('┌'));
+    canvas.set(x + w - 1, y, edge('┐'));
+    canvas.set(x, y + h - 1, edge('└'));
+    canvas.set(x + w - 1, y + h - 1, edge('┘'));
+    if w > 12 {
+        canvas.put_str(x + 2, y, " popup ", BORDER_ACTIVE, w - 4);
+    }
+    draw_pane_view(canvas, pane?, (x + 1, y + 1, w - 2, h - 2), true)
 }
 
 /// Draw a pane scrolled back in copy mode, with the selection highlighted.
@@ -214,6 +326,15 @@ mod tests {
         assert!(c.cell(0, 0).attrs.has(flags::REVERSE) && c.cell(1, 0).attrs.has(flags::REVERSE));
         assert!(!c.cell(2, 0).attrs.has(flags::REVERSE));
         assert_eq!(c.cursor, Some((1, 0)));
+    }
+
+    #[test]
+    fn dock_tabs_scroll_to_the_active_one() {
+        let names = ["git", "claude", "logs"];
+        assert_eq!(dock_tabs(&names, 0, 40), vec![(0, 0, 5), (1, 6, 14), (2, 15, 21)]);
+        let t = dock_tabs(&names, 2, 12);
+        assert_eq!(t.first().map(|t| t.0), Some(2));
+        assert!(dock_tabs(&[], 0, 10).is_empty());
     }
 
     #[tokio::test]

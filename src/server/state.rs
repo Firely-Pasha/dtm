@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::layout::{Node, PaneId, Rect};
 use crate::config::SidebarMode;
-use crate::project::PlanNode;
+use crate::project::{PlanNode, Size, DEFAULT_DOCK_WIDTH};
 use crate::protocol::ServerMsg;
 use crate::pty::Pty;
 use crate::term::canvas::Canvas;
@@ -87,6 +87,35 @@ impl Window {
     }
 }
 
+/// A session-wide pane in the dock; started when its tab is first shown.
+pub struct DockEntry {
+    pub name: String,
+    pub spec: PaneSpec,
+    pub pane: Option<PaneId>,
+}
+
+pub struct Dock {
+    pub entries: Vec<DockEntry>,
+    pub active: usize,
+    pub width: Size,
+    pub visible: bool,
+    /// Keys go to the dock pane instead of the window.
+    pub focused: bool,
+}
+
+impl Default for Dock {
+    fn default() -> Dock {
+        Dock { entries: Vec::new(), active: 0, width: DEFAULT_DOCK_WIDTH, visible: false, focused: false }
+    }
+}
+
+/// A pane that belongs to the session but not to a window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Extra {
+    Popup,
+    Dock(usize),
+}
+
 pub struct Session {
     pub id: SessionId,
     pub name: String,
@@ -98,9 +127,26 @@ pub struct Session {
     pub cwd: PathBuf,
     /// The project file this session was opened from.
     pub project: Option<PathBuf>,
+    /// Typed into every new pane before its own command.
+    pub pane_command: Option<String>,
+    pub dock: Dock,
+    /// Size of a dock pane (the dock minus its tab row and separator).
+    pub dock_size: (u16, u16),
+    pub popup: Option<PaneId>,
+    pub popup_shown: bool,
 }
 
 impl Session {
+    /// The popup, while it is on screen.
+    pub fn shown_popup(&self) -> Option<PaneId> {
+        self.popup.filter(|_| self.popup_shown)
+    }
+
+    /// The dock's pane that is on screen (started and visible).
+    pub fn shown_dock_pane(&self) -> Option<PaneId> {
+        if self.dock.visible { self.dock.entries.get(self.dock.active).and_then(|e| e.pane) } else { None }
+    }
+
     pub fn active_window(&self) -> &Window {
         &self.windows[self.active]
     }
@@ -118,6 +164,9 @@ pub enum PromptKind {
     ConfirmKillSession(SessionId),
     ConfirmRespawnPane(PaneId),
     ConfirmRespawnWindow(WindowId),
+    DockAdd(SessionId),
+    DockRename(SessionId),
+    ConfirmDockClose(SessionId),
 }
 
 impl PromptKind {
@@ -129,6 +178,7 @@ impl PromptKind {
                 | PromptKind::ConfirmKillSession(_)
                 | PromptKind::ConfirmRespawnPane(_)
                 | PromptKind::ConfirmRespawnWindow(_)
+                | PromptKind::ConfirmDockClose(_)
         )
     }
 }
@@ -137,6 +187,13 @@ pub struct Prompt {
     pub kind: PromptKind,
     pub text: String,
     pub label: String,
+}
+
+/// Incremental window search in the sidebar.
+pub struct Search {
+    pub query: String,
+    /// The window that was shown when the search began.
+    pub origin: usize,
 }
 
 pub struct Client {
@@ -154,6 +211,7 @@ pub struct Client {
     pub prompt: Option<Prompt>,
     /// Selected row while the sidebar has keyboard focus.
     pub sidebar_focus: Option<usize>,
+    pub search: Option<Search>,
     /// Plain resize keys are accepted until this moment.
     pub resize_until: Option<Instant>,
     pub prev: Option<Canvas>,
@@ -176,6 +234,7 @@ impl Client {
             prefix: None,
             prompt: None,
             sidebar_focus: None,
+            search: None,
             resize_until: None,
             prev: None,
             last_active: Instant::now(),

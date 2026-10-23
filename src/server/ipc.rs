@@ -56,6 +56,19 @@ pub fn expand_format(format: &str, ctx: &FormatCtx) -> String {
 impl Server {
     /// `dtm select-pane`: move focus relative to `pane`, as if its owner had pressed the key.
     pub fn select_pane_ipc(&mut self, pane: PaneId, dir: PaneDir) -> Result<(), String> {
+        if let Some((si, extra)) = self.extra_of(pane) {
+            // Past the edge of the dock: back to the window, which is on the sidebar's side.
+            let toward_window = match dir {
+                PaneDir::Left => self.toward_sidebar(Dir::Left),
+                PaneDir::Right => self.toward_sidebar(Dir::Right),
+                _ => false,
+            };
+            if toward_window && matches!(extra, super::state::Extra::Dock(_)) {
+                self.sessions[si].dock.focused = false;
+                self.mark_dirty();
+            }
+            return Ok(());
+        }
         let (si, wi) = self.locate_pane(pane).ok_or_else(|| format!("no such pane: {pane}"))?;
         let dir = match dir {
             PaneDir::Last => {
@@ -87,6 +100,19 @@ impl Server {
 
     /// `dtm query`: expand a format for `pane`.
     pub fn query_ipc(&self, pane: PaneId, format: &str) -> Result<String, String> {
+        if self.extra_of(pane).is_some() {
+            // Dock and popup panes sit at every edge: the plugin always hands over to dtm.
+            let ctx = FormatCtx {
+                pane_id: pane,
+                active: true,
+                at_left: true,
+                at_right: true,
+                at_top: true,
+                at_bottom: true,
+                ..Default::default()
+            };
+            return Ok(expand_format(format, &ctx));
+        }
         let (si, wi) = self.locate_pane(pane).ok_or_else(|| format!("no such pane: {pane}"))?;
         let s = &self.sessions[si];
         let w = &s.windows[wi];

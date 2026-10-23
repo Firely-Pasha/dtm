@@ -40,7 +40,9 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `Ctrl-l` | send a literal Ctrl-l | `[` or `PageUp` | copy mode |
 | `]` | paste | `a` | send a literal Ctrl-a |
 | `r` | reload config | `R` | respawn pane (asks) |
-| `Alt-r` | respawn window (asks) | | |
+| `Alt-r` | respawn window (asks) | `f` | search windows |
+| `P` | popup shell (toggle) | `D` | show / hide the dock |
+| `{` / `}` | previous / next dock pane | `A` / `X` | add / close a dock pane |
 
 Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
 (see below).
@@ -158,6 +160,10 @@ windows:
   absolute paths work. A pane's `command` is typed into its shell, so you are
   left at a prompt when it ends. Unknown keys and mistakes (a split with one
   pane, a bad size) are reported with their position before anything starts.
+- **`pane_command`** (top level) is typed into every pane's shell before the
+  pane's own command, e.g. `pane_command: source .venv/bin/activate`. It also
+  applies to panes you create later in the session (splits, new windows, the
+  popup, dock panes) and to respawned ones.
 - **Lazy start.** Only the first window is created when the project opens; the
   others get their panes and run their commands the first time you show them
   (a `…` marks them in the sidebar). Set `lazy: false` on the file or on a
@@ -176,13 +182,55 @@ windows:
   program other than the shell is running, its command line. With no argument
   it updates the file the session was opened from, or creates
   `project.dtm.yaml` in the session's directory. Paths are written relative to
-  the file, and no `root` is written. When updating, your `name` and `lazy`
-  settings are kept, but comments are not. The `export-project` action (unbound
-  by default) does the same from a key.
+  the file. A file without a `root` is written without one; a file that has
+  one keeps it, and the paths are then written relative to it. A saved project
+  is updated in place, never exported to its root. When updating, your `name`,
+  `root`, `lazy`, `pane_command` and dock size are kept, but comments are not.
+  `e` in the focused sidebar (and the unbound `export-project` action) does the
+  same from a key.
 - **Respawn.** `<prefix> R` restarts the focused pane the way it started (same
   directory and command, a new process) and `<prefix> Alt-r` restarts the whole
   window from its project layout, closing panes you added since. Both ask first.
   In the sidebar, `R` respawns the selected window.
+
+## The dock
+
+A second side panel, opposite the sidebar, holds panes that belong to the
+whole session instead of one window: lazygit, a claude session, a log tail. It
+shows one pane at a time under a row of tabs.
+
+```yaml
+dock:
+  width: 35%          # N% of the terminal or cells (default 35%)
+  visible: true       # shown when the session opens (default: hidden)
+  panes:
+    - name: git       # default: the command's first word
+      command: lazygit
+    - command: claude
+      path: ..        # like window panes: relative to root
+```
+
+Dock panes start the first time they are shown. `<prefix> D` shows or hides
+the dock, `{` and `}` cycle its panes, `A` asks for a command and adds a pane
+running it (empty: a shell), `X` closes the current one (asks first), and the
+`dock-rename` / `focus-dock` actions are unbound. `Ctrl-l` from the rightmost
+window pane (or any focus move towards the dock) moves into it and the opposite
+direction comes back; clicks on tabs and panes work too. `<prefix> x` closes the
+focused dock pane without asking. The dock is exported with the project.
+
+## Popup
+
+`<prefix> P` opens a floating shell in the current directory (`[popup] width`
+and `height` size it) and `<prefix> P` again hides it; it keeps running while
+hidden. While it is shown it has the keyboard, and `<prefix> x` (or exiting the
+shell) closes it.
+
+## Searching windows
+
+`<prefix> f`, or `/` in the focused sidebar, filters the windows by typing
+(fuzzy: `srv` finds `2 server`). `Up`/`Down` (or `Ctrl-n`/`Ctrl-p`) move the
+selection, which shows that window as you go; `Enter` opens it and `Esc` goes
+back to where you were.
 
 ## Sidebar
 
@@ -221,11 +269,11 @@ checked by the test suite to match the built-in defaults.
   `kill-pane`, `zoom-pane`, `new-session`, `next-session`, `prev-session`,
   `select-session N`, `rename-session`, `toggle-sidebar`,
   `toggle-sidebar-mode`, `copy-mode`, `paste-buffer`, `detach`, `send-prefix`,
-  `reload-config`, `respawn-pane`, `respawn-window`, `export-project`, `focus-last`, `navigate-left|right|up|down`, `navigate-last`,
+  `reload-config`, `respawn-pane`, `respawn-window`, `export-project`, `search-windows`, `toggle-popup`, `toggle-dock`, `focus-dock`, `dock-next|prev|add|close|rename`, `focus-last`, `navigate-left|right|up|down`, `navigate-last`,
   `send-key` (sends the key that triggered the binding), and in copy mode `copy-up|down|left|right`,
   `copy-page-up|down`, `copy-half-page-up|down`, `copy-top|bottom`,
   `copy-line-start|end`, `copy-select`, `copy-select-line`, `copy-yank`,
-  `copy-cancel`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|respawn|leave`.
+  `copy-cancel`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|respawn|export|search|leave`.
 - A config error is reported by `dtm reload` / `<prefix> r` and the running
   configuration stays active.
 

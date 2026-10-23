@@ -24,6 +24,10 @@ pub enum SidebarCmd {
     New,
     Respawn,
     Leave,
+    /// Write the session to its project file.
+    Export,
+    /// Filter the windows by typing.
+    Search,
 }
 
 /// Movement and editing commands available in copy mode.
@@ -95,6 +99,19 @@ pub enum Action {
     RespawnWindow,
     /// Write the session to its project file.
     ExportProject,
+    /// Focus the sidebar and filter its windows by typing.
+    SearchWindows,
+    /// Show or hide the popup shell (it keeps running while hidden).
+    TogglePopup,
+    ToggleDock,
+    FocusDock,
+    DockNext,
+    DockPrev,
+    /// Ask for a command and add a pane running it to the dock.
+    DockAdd,
+    /// Close the dock's current pane (asks first).
+    DockClose,
+    DockRename,
 }
 
 fn number<T: FromStr>(arg: Option<&str>, name: &str) -> Result<T, String> {
@@ -185,6 +202,17 @@ impl FromStr for Action {
             "respawn-pane" => no_arg(Action::RespawnPane),
             "respawn-window" => no_arg(Action::RespawnWindow),
             "export-project" => no_arg(Action::ExportProject),
+            "search-windows" => no_arg(Action::SearchWindows),
+            "toggle-popup" => no_arg(Action::TogglePopup),
+            "toggle-dock" => no_arg(Action::ToggleDock),
+            "focus-dock" => no_arg(Action::FocusDock),
+            "dock-next" => no_arg(Action::DockNext),
+            "dock-prev" => no_arg(Action::DockPrev),
+            "dock-add" => no_arg(Action::DockAdd),
+            "dock-close" => no_arg(Action::DockClose),
+            "dock-rename" => no_arg(Action::DockRename),
+            "sidebar-export" => no_arg(Action::Sidebar(SidebarCmd::Export)),
+            "sidebar-search" => no_arg(Action::Sidebar(SidebarCmd::Search)),
             "sidebar-respawn" => no_arg(Action::Sidebar(SidebarCmd::Respawn)),
             "sidebar-down" => no_arg(Action::Sidebar(SidebarCmd::Down)),
             "sidebar-up" => no_arg(Action::Sidebar(SidebarCmd::Up)),
@@ -226,6 +254,12 @@ mod tests {
         assert_eq!("respawn-pane".parse(), Ok(Action::RespawnPane));
         assert_eq!("respawn-window".parse(), Ok(Action::RespawnWindow));
         assert_eq!("export-project".parse(), Ok(Action::ExportProject));
+        assert_eq!("search-windows".parse(), Ok(Action::SearchWindows));
+        assert_eq!("toggle-popup".parse(), Ok(Action::TogglePopup));
+        assert_eq!("dock-add".parse(), Ok(Action::DockAdd));
+        assert_eq!("dock-prev".parse(), Ok(Action::DockPrev));
+        assert_eq!("sidebar-export".parse(), Ok(Action::Sidebar(SidebarCmd::Export)));
+        assert_eq!("sidebar-search".parse(), Ok(Action::Sidebar(SidebarCmd::Search)));
         assert_eq!("sidebar-respawn".parse(), Ok(Action::Sidebar(SidebarCmd::Respawn)));
         assert_eq!("sidebar-move-up".parse(), Ok(Action::Sidebar(SidebarCmd::MoveUp)));
     }

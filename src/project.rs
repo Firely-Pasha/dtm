@@ -18,7 +18,34 @@ pub struct ProjectFile {
     pub root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lazy: Option<bool>,
+    /// Typed into every pane's shell before the pane's own command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dock: Option<DockSpec>,
     pub windows: Vec<WindowSpec>,
+}
+
+/// The side panel of session-wide panes.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DockSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<SizeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    pub panes: Vec<DockPaneSpec>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DockPaneSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -116,12 +143,39 @@ pub struct PlanWindow {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PlanDockPane {
+    pub name: String,
+    pub cwd: PathBuf,
+    pub command: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PlanDock {
+    pub width: Size,
+    pub visible: bool,
+    pub panes: Vec<PlanDockPane>,
+}
+
+/// Width of a dock that does not say.
+pub const DEFAULT_DOCK_WIDTH: Size = Size::Percent(35.0);
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Plan {
     pub name: String,
     pub root: PathBuf,
     pub windows: Vec<PlanWindow>,
     /// Index of the window shown first.
     pub focus: usize,
+    pub pane_command: Option<String>,
+    pub dock: Option<PlanDock>,
+}
+
+/// The name a pane gets when it has none: its command's first word, or the shell.
+pub fn default_pane_name(command: Option<&str>, shell: &str) -> String {
+    command
+        .and_then(|c| c.split_whitespace().next())
+        .map(|w| w.rsplit('/').next().unwrap_or(w).to_string())
+        .unwrap_or_else(|| shell.rsplit('/').next().unwrap_or("sh").to_string())
 }
 
 // ---- paths ----
@@ -181,6 +235,14 @@ pub fn home_dir() -> PathBuf {
 
 // ---- loading and validating ----
 
+/// `size` in cells out of `total`.
+pub fn cells(size: Size, total: u16) -> u16 {
+    match size {
+        Size::Percent(p) => (f32::from(total) * p / 100.0).round() as u16,
+        Size::Cells(n) => n,
+    }
+}
+
 pub fn parse_size(s: &SizeSpec) -> Result<Size, String> {
     match s {
         SizeSpec::Cells(0) => Err("size must be above 0".into()),
@@ -237,6 +299,14 @@ fn validate_node(n: &NodeSpec, at: &str) -> Result<(), String> {
 pub fn validate(file: &ProjectFile) -> Result<(), String> {
     if file.windows.is_empty() {
         return Err("no windows".into());
+    }
+    if let Some(d) = &file.dock {
+        if d.panes.is_empty() {
+            return Err("dock: needs at least one pane".into());
+        }
+        if let Some(w) = &d.width {
+            parse_size(w).map_err(|e| format!("dock.width: {e}"))?;
+        }
     }
     for (i, w) in file.windows.iter().enumerate() {
         let at = format!("windows[{i}]");
@@ -302,7 +372,20 @@ pub fn resolve(file: &ProjectFile, file_dir: &Path, home: &Path) -> Plan {
         })
         .collect();
     let focus = file.windows.iter().position(|w| w.focus == Some(true)).unwrap_or(0);
-    Plan { name, root, windows, focus }
+    let dock = file.dock.as_ref().map(|d| PlanDock {
+        width: d.width.as_ref().and_then(|w| parse_size(w).ok()).unwrap_or(DEFAULT_DOCK_WIDTH),
+        visible: d.visible.unwrap_or(false),
+        panes: d
+            .panes
+            .iter()
+            .map(|p| PlanDockPane {
+                name: p.name.clone().unwrap_or_else(|| default_pane_name(p.command.as_deref(), "shell")),
+                cwd: p.path.as_ref().map_or_else(|| root.clone(), |x| expand(x, &root, home)),
+                command: p.command.clone(),
+            })
+            .collect(),
+    });
+    Plan { name, root, windows, focus, pane_command: file.pane_command.clone(), dock }
 }
 
 /// Load and resolve a project file.
@@ -470,17 +553,47 @@ pub fn from_plan(plan: &Plan, base: &Path, home: &Path) -> ProjectFile {
             spec
         })
         .collect();
-    ProjectFile { name: Some(plan.name.clone()), root: None, lazy: None, windows }
+    let dock = plan.dock.as_ref().filter(|d| !d.panes.is_empty()).map(|d| DockSpec {
+        width: Some(match d.width {
+            Size::Percent(p) => SizeSpec::Text(format!("{}%", (p.round() as i64).max(1))),
+            Size::Cells(n) => SizeSpec::Cells(n),
+        }),
+        visible: d.visible.then_some(true),
+        panes: d
+            .panes
+            .iter()
+            .map(|p| DockPaneSpec {
+                name: (p.name != default_pane_name(p.command.as_deref(), "shell")).then(|| p.name.clone()),
+                path: collapse(&p.cwd, &base, home),
+                command: p.command.clone(),
+            })
+            .collect(),
+    });
+    ProjectFile {
+        name: Some(plan.name.clone()),
+        root: None,
+        lazy: None,
+        pane_command: plan.pane_command.clone(),
+        dock,
+        windows,
+    }
 }
 
-/// Keep what a person wrote at the top of an existing file (name, lazy flags)
-/// and take the windows from the export. A `root` is dropped because the
-/// exported paths are relative to the file's directory.
+/// Keep what a person wrote at the top of an existing file (name, root, lazy
+/// flags, pane command, dock size) and take the windows from the export.
 pub fn merge(existing: &ProjectFile, mut exported: ProjectFile) -> ProjectFile {
     if existing.name.is_some() {
         exported.name = existing.name.clone();
     }
+    exported.root = existing.root.clone();
     exported.lazy = existing.lazy;
+    if existing.pane_command.is_some() {
+        exported.pane_command = existing.pane_command.clone();
+    }
+    if let (Some(old), Some(new)) = (&existing.dock, &mut exported.dock) {
+        new.width = old.width.clone().or(new.width.take());
+        new.visible = old.visible;
+    }
     for w in &mut exported.windows {
         if let Some(old) = existing.windows.iter().find(|o| o.name.is_some() && o.name == w.name) {
             w.lazy = old.lazy;
@@ -493,9 +606,15 @@ pub fn merge(existing: &ProjectFile, mut exported: ProjectFile) -> ProjectFile {
 pub fn export_to(plan: &Plan, target: &Path, home: &Path) -> Result<(), String> {
     let target = std::path::absolute(target).map_err(|e| e.to_string())?;
     let dir = target.parent().ok_or("bad target path")?;
-    let mut file = from_plan(plan, dir, home);
-    if target.is_file() {
-        file = merge(&load(&target)?, file);
+    let existing = if target.is_file() { Some(load(&target)?) } else { None };
+    // Paths are written relative to the file's `root` when it has one.
+    let base = match existing.as_ref().and_then(|e| e.root.as_deref()) {
+        Some(r) => expand(r, dir, home),
+        None => clean(dir),
+    };
+    let mut file = from_plan(plan, &base, home);
+    if let Some(old) = &existing {
+        file = merge(old, file);
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let text = serde_norway::to_string(&file).map_err(|e| e.to_string())?;
@@ -648,6 +767,8 @@ mod tests {
             name: "n".into(),
             root: "/r".into(),
             focus: 1,
+            pane_command: None,
+            dock: None,
             windows: vec![
                 PlanWindow {
                     name: Some("a".into()),
@@ -670,20 +791,66 @@ mod tests {
     }
 
     #[test]
-    fn merge_keeps_name_and_lazy_and_drops_root() {
+    fn merge_keeps_name_root_and_lazy() {
         let old = parse("name: mine\nroot: /x\nlazy: false\nwindows:\n  - {name: a, lazy: true}\n").unwrap();
         let new = ProjectFile {
             name: Some("session".into()),
             root: None,
             lazy: None,
+            pane_command: None,
+            dock: None,
             windows: vec![WindowSpec { name: Some("a".into()), ..Default::default() }, WindowSpec::default()],
         };
         let m = merge(&old, new);
         assert_eq!(m.name.as_deref(), Some("mine"));
         assert_eq!(m.lazy, Some(false));
-        assert_eq!(m.root, None);
+        assert_eq!(m.root.as_deref(), Some("/x"));
         assert_eq!(m.windows[0].lazy, Some(true));
         assert_eq!(m.windows[1].lazy, None);
+    }
+
+    #[test]
+    fn export_keeps_an_existing_root_and_writes_paths_relative_to_it() {
+        let tmp = std::env::temp_dir().join(format!("dtm-root-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let target = tmp.join("p.yaml");
+        std::fs::write(&target, "root: /code/app\npane_command: echo hi\nwindows:\n  - {name: a}\n").unwrap();
+        let p = Plan {
+            name: "app".into(),
+            root: "/code/app".into(),
+            focus: 0,
+            pane_command: None,
+            dock: None,
+            windows: vec![PlanWindow {
+                name: Some("a".into()),
+                lazy: true,
+                tree: PlanNode::Pane { cwd: "/code/app/src".into(), command: None, focus: true },
+            }],
+        };
+        export_to(&p, &target, Path::new(HOME)).unwrap();
+        let f = load(&target).unwrap();
+        assert_eq!(f.root.as_deref(), Some("/code/app"));
+        assert_eq!(f.pane_command.as_deref(), Some("echo hi"));
+        assert_eq!(f.windows[0].path.as_deref(), Some("src"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn pane_command_and_dock_parse_resolve_and_export() {
+        let text = "pane_command: source env\ndock:\n  width: 40%\n  visible: true\n  panes:\n    - command: lazygit\n    - {name: ai, command: claude, path: sub}\nwindows:\n  - {}\n";
+        let p = plan(text, "/proj");
+        assert_eq!(p.pane_command.as_deref(), Some("source env"));
+        let d = p.dock.clone().unwrap();
+        assert_eq!(d.width, Size::Percent(40.0));
+        assert!(d.visible);
+        assert_eq!(d.panes[0].name, "lazygit");
+        assert_eq!(d.panes[1].cwd, Path::new("/proj/sub"));
+        let f = from_plan(&p, Path::new("/proj"), Path::new(HOME));
+        let again = resolve(&parse(&serde_norway::to_string(&f).unwrap()).unwrap(), Path::new("/proj"), Path::new(HOME));
+        assert_eq!(again.dock, p.dock);
+        assert_eq!(again.pane_command, p.pane_command);
+        assert!(parse("dock: {panes: []}\nwindows: [{}]\n").is_err());
+        assert!(parse("dock: {width: x, panes: [{}]}\nwindows: [{}]\n").is_err());
     }
 
     #[test]

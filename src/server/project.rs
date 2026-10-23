@@ -4,9 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use super::layout::{Axis, Node, PaneId, Rect};
-use super::state::{ClientId, Window};
+use super::state::{ClientId, Dock, DockEntry, PaneSpec, Window};
 use super::Server;
-use crate::project::{self, Plan, PlanAxis, PlanChild, PlanNode, PlanWindow, Size};
+use crate::project::{self, Plan, PlanAxis, PlanChild, PlanDock, PlanDockPane, PlanNode, PlanWindow, Size};
 use crate::protocol::{ServerMsg, Snapshot};
 
 /// A pane to start: id, working directory, command and whether it takes focus.
@@ -85,6 +85,25 @@ impl Server {
             owner: None,
             cwd: plan.root.clone(),
             project: Some(source),
+            pane_command: plan.pane_command.clone(),
+            dock: plan.dock.as_ref().map_or_else(Dock::default, |d| Dock {
+                entries: d
+                    .panes
+                    .iter()
+                    .map(|p| DockEntry {
+                        name: p.name.clone(),
+                        spec: PaneSpec { cwd: Some(p.cwd.clone()), command: p.command.clone() },
+                        pane: None,
+                    })
+                    .collect(),
+                active: 0,
+                width: d.width,
+                visible: d.visible,
+                focused: false,
+            }),
+            dock_size: (1, 1),
+            popup: None,
+            popup_shown: false,
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;
@@ -103,6 +122,7 @@ impl Server {
 
     /// Start the pending window every attached client is looking at.
     pub fn start_visible_windows(&mut self) {
+        self.start_visible_dock();
         let mut jobs: Vec<(usize, usize)> = Vec::new();
         for (si, s) in self.sessions.iter().enumerate() {
             if s.windows.is_empty() || !self.clients.values().any(|c| c.session == Some(s.id)) {
@@ -200,33 +220,37 @@ impl Server {
         w.last = None;
         w.zoomed = false;
         w.pending = false;
-        for (id, _, command, _) in leaves {
-            if let Some(cmd) = command {
-                self.run_command(id, cmd);
-            }
-        }
         let sid = self.sessions[si].id;
+        for (id, _, command, _) in leaves {
+            self.setup_pane(sid, id, command);
+        }
         self.relayout(sid);
         self.refresh_name(si, wi);
         self.mark_dirty();
         Ok(())
     }
 
-    /// Type `cmd` into the pane's shell and remember it as the pane's command.
-    fn run_command(&mut self, id: PaneId, cmd: String) {
-        if let Some(p) = self.panes.get_mut(&id) {
-            p.pty.write(format!("{cmd}\r").into_bytes());
-            p.spec.command = Some(cmd);
-        }
-    }
-
     // ---- respawn ----
 
     /// Replace a pane with a fresh process started the same way.
     pub fn respawn_pane(&mut self, pane: PaneId) -> Result<(), String> {
-        let (si, wi) = self.locate_pane(pane).ok_or("no such pane")?;
         let old = self.panes.get(&pane).ok_or("no such pane")?;
         let (spec, size) = (old.spec.clone(), (old.screen.cols() as u16, old.screen.rows() as u16));
+        if let Some((si, extra)) = self.extra_of(pane) {
+            let new = self.alloc_pane_id();
+            self.spawn_pane(new, spec.cwd.clone(), size)?;
+            let s = &mut self.sessions[si];
+            match extra {
+                super::state::Extra::Popup => s.popup = Some(new),
+                super::state::Extra::Dock(i) => s.dock.entries[i].pane = Some(new),
+            }
+            self.panes.remove(&pane);
+            let sid = self.sessions[si].id;
+            self.setup_pane(sid, new, spec.command);
+            self.mark_dirty();
+            return Ok(());
+        }
+        let (si, wi) = self.locate_pane(pane).ok_or("no such pane")?;
         let new = self.alloc_pane_id();
         self.spawn_pane(new, spec.cwd.clone(), size)?;
         let w = &mut self.sessions[si].windows[wi];
@@ -239,9 +263,8 @@ impl Server {
         }
         // Dropping the old pane hangs up its terminal; its exit event is then ignored.
         self.panes.remove(&pane);
-        if let Some(cmd) = spec.command {
-            self.run_command(new, cmd);
-        }
+        let sid = self.sessions[si].id;
+        self.setup_pane(sid, new, spec.command);
         self.refresh_name(si, wi);
         self.mark_dirty();
         Ok(())
@@ -320,8 +343,28 @@ impl Server {
                 },
             })
             .collect();
+        let dock = (!s.dock.entries.is_empty()).then(|| PlanDock {
+            width: s.dock.width,
+            visible: s.dock.visible,
+            panes: s
+                .dock
+                .entries
+                .iter()
+                .map(|e| {
+                    let pane = e.pane.and_then(|p| self.panes.get(&p));
+                    PlanDockPane {
+                        name: e.name.clone(),
+                        cwd: pane
+                            .and_then(|p| p.pty.cwd())
+                            .or_else(|| e.spec.cwd.clone())
+                            .unwrap_or_else(|| root.clone()),
+                        command: e.spec.command.clone().or_else(|| pane.and_then(|p| p.pty.foreground_cmdline())),
+                    }
+                })
+                .collect(),
+        });
         Snapshot {
-            plan: Plan { name: s.name.clone(), root, windows, focus: s.active },
+            plan: Plan { name: s.name.clone(), root, windows, focus: s.active, pane_command: s.pane_command.clone(), dock },
             source: s.project.clone(),
         }
     }

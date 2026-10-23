@@ -540,7 +540,7 @@ async fn shift_v_selects_whole_lines() {
     h.wait_exit().await;
 }
 
-const SIDEBAR_HINT: &str = "j/k ⏎ x r J/K n q";
+const SIDEBAR_HINT: &str = "j/k ⏎ x r n / e q";
 
 #[tokio::test]
 async fn sidebar_takes_focus_from_the_panes() {
@@ -1097,7 +1097,8 @@ async fn export_updates_the_opened_file_and_keeps_its_name() {
     assert!(ok, "{msg}");
     let yaml = std::fs::read_to_string(&file).unwrap();
     assert!(yaml.contains("name: upd") && yaml.contains("name: a") && yaml.contains("name: b"), "{yaml}");
-    assert!(!yaml.contains("root") && !yaml.contains("my comment"), "{yaml}");
+    assert!(yaml.contains("root: ."), "an existing root is kept:\n{yaml}");
+    assert!(!yaml.contains("my comment"), "{yaml}");
     assert!(msg.contains("comments"), "{msg}");
 }
 
@@ -1201,4 +1202,160 @@ async fn named_projects_are_edited_listed_opened_and_removed() {
     assert_eq!(out.trim(), "");
     let (ok, out) = env.run(&["open", "foo"]);
     assert!(!ok && out.contains("no project"), "{out}");
+}
+
+// ---- export from the sidebar, search, pane_command, popup, dock ----
+
+#[tokio::test]
+async fn sidebar_export_updates_the_named_project_and_keeps_its_root() {
+    let env = Env::new("sb-export", "");
+    let work = env.dir.join("work");
+    std::fs::create_dir_all(work.join("src")).unwrap();
+    let file = env.dir.join("projects/np.yaml");
+    write(&file, &format!("name: np\nroot: {}\nwindows:\n  - name: one\n    path: src\n", work.display()));
+    let mut h = env.client(&["open", "np"], 100, 30);
+    h.wait_text("1 one").await;
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("e");
+    h.wait_text("exported to").await;
+    let yaml = std::fs::read_to_string(&file).unwrap();
+    assert!(yaml.contains(&format!("root: {}", work.display())), "{yaml}");
+    assert!(yaml.contains("path: src"), "paths stay relative to the root:\n{yaml}");
+    assert!(!work.join("project.dtm.yaml").exists(), "a named project must not be exported to its root");
+}
+
+#[tokio::test]
+async fn search_filters_windows_fuzzily() {
+    let env = Env::new("search", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: sr\nwindows:\n  - name: alpha\n    command: echo AA$((1+1))\n  - name: server\n    command: echo SRV$((3+4))\n  - name: shell\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("AA2").await;
+
+    h.send(&format!("{CTRL_A}f"));
+    h.wait_text("/").await;
+    h.send("srv");
+    h.wait_for("filtered to the server window", |t| t.contains("2 server") && !t.contains("1 alpha") && !t.contains("3 shell")).await;
+    h.wait_text("SRV7").await;
+    h.send("\r");
+    h.wait_for("search closed", |t| !t.contains("⏎ open") && t.contains("1 alpha") && t.contains("SRV7")).await;
+
+    // Escape goes back to the window the search started from.
+    h.send(&format!("{CTRL_A}f"));
+    h.send("alp");
+    h.wait_for("alpha shown", |t| t.contains("AA2") && !t.contains("SRV7")).await;
+    h.send("\x1b");
+    h.wait_for("back on the server", |t| t.contains("SRV7") && t.contains("3 shell")).await;
+
+    h.send(&format!("{CTRL_A}f"));
+    h.send("zzz");
+    h.wait_text("no match").await;
+    h.send("\x7f\x7f\x7f\x7f");
+    h.wait_for("search cancelled", |t| !t.contains("no match") && t.contains("2 server")).await;
+}
+
+#[tokio::test]
+async fn pane_command_runs_before_every_command_including_later_splits() {
+    let env = Env::new("pane-command", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: pc\npane_command: export X=$((40+2))\nwindows:\n  - name: w\n    command: echo V$X\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("V42").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send("echo W$X\r");
+    h.wait_text("W42").await;
+}
+
+#[tokio::test]
+async fn popup_opens_in_the_cwd_hides_and_dies_with_the_prefix_x() {
+    let env = Env::new("popup", "");
+    let secs = (30000 + std::process::id() % 10000).to_string();
+    let mut h = env.client_in(Some(&env.dir), &[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}P"));
+    h.wait_text("popup").await;
+    h.send("pwd; echo PP$((20+2))\r");
+    h.wait_text("PP22").await;
+    assert!(h.text().contains("e2e-popup"), "the popup starts in the pane's directory:\n{}", h.text());
+
+    h.send(&format!("{CTRL_A}P"));
+    h.wait_for("popup hidden", |t| !t.contains("PP22") && !t.contains("popup")).await;
+    h.send(&format!("{CTRL_A}P"));
+    h.wait_for("same shell back", |t| t.contains("PP22")).await;
+
+    h.send(&format!("exec sleep {secs}\r"));
+    eventually("popup process", || count_procs(&["sleep", &secs]) == 1).await;
+    h.send(&format!("{CTRL_A}x"));
+    h.wait_for("popup killed", |t| !t.contains("popup")).await;
+    eventually("popup process gone", || count_procs(&["sleep", &secs]) == 0).await;
+
+    // The window underneath is untouched and has the keyboard again.
+    h.send("echo AFTER$((1+1))\r");
+    h.wait_text("AFTER2").await;
+}
+
+/// The dock's part of a screen row (after the last separator).
+fn dock_tabs(row: &str) -> &str {
+    row.rsplit('│').next().unwrap_or(row)
+}
+
+fn column_of(text: &str, needle: &str) -> Option<usize> {
+    text.lines().find(|l| l.contains(needle)).map(|l| l.split(needle).next().unwrap().chars().count())
+}
+
+#[tokio::test]
+async fn dock_panes_start_lazily_take_focus_and_can_be_added_closed_and_exported() {
+    let env = Env::new("dock", "");
+    let proj = env.dir.join("proj");
+    let file = proj.join("project.dtm.yaml");
+    write(
+        &file,
+        "name: dk\ndock:\n  visible: true\n  width: 40%\n  panes:\n    - name: one\n      command: echo D$((1+1)); touch d1\n    - name: two\n      command: touch d2\nwindows:\n  - name: main\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text("D2").await;
+    let text = h.text();
+    assert!(h.screen.row_text(0).contains(" one ") && h.screen.row_text(0).contains(" two"), "tabs:\n{text}");
+    assert!(column_of(&text, "D2").unwrap() > 60, "the dock is on the right:\n{text}");
+    eventually("first dock pane started", || proj.join("d1").exists()).await;
+    assert!(!proj.join("d2").exists(), "the second dock pane starts only when shown");
+
+    h.send(&format!("{CTRL_A}}}"));
+    eventually("second dock pane started", || proj.join("d2").exists()).await;
+
+    // Ctrl-l from the only window pane reaches the dock; Ctrl-h leads back.
+    h.send("\x0c");
+    h.send("echo T$((5+5))\r");
+    h.wait_text("T10").await;
+    assert!(column_of(&h.text(), "T10").unwrap() > 60, "typed into the dock:\n{}", h.text());
+    h.send("\x08");
+    h.send("echo W$((2+2))\r");
+    h.wait_text("W4").await;
+    assert!(column_of(&h.text(), "W4").unwrap() < 60, "typed into the window:\n{}", h.text());
+
+    // Add a pane with a prompt, then close it again.
+    h.send(&format!("{CTRL_A}A"));
+    h.wait_text("dock command").await;
+    h.send("echo ADDED$((7+7))\r");
+    h.wait_text("ADDED14").await;
+    assert!(dock_tabs(&h.screen.row_text(0)).contains(" echo"), "{}", h.text());
+    h.send(&format!("{CTRL_A}X"));
+    h.wait_text("close dock pane echo? (y/n)").await;
+    h.send("y");
+    h.wait_for("tab closed", |t| t.lines().next().is_some_and(|l| !dock_tabs(l).contains(" echo") && l.contains(" two"))).await;
+
+    // The dock is part of the exported project.
+    let (ok, msg) = env.run(&["export", "-t", "dk"]);
+    assert!(ok, "{msg}");
+    let yaml = std::fs::read_to_string(&file).unwrap();
+    assert!(yaml.contains("dock:") && yaml.contains("name: one") && yaml.contains("width: 40%"), "{yaml}");
+    assert!(yaml.contains("touch d2"), "{yaml}");
+    assert!(!yaml.contains("ADDED"), "{yaml}");
 }

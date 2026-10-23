@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::action::Action;
 use crate::keys::{format_key, parse_key, KeyCombo, CTRL};
+use crate::project::{parse_size, Size, SizeSpec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -32,6 +33,13 @@ pub struct SidebarCfg {
     pub follow: bool,
 }
 
+/// The popup shell's size, as a share of the pane area or in cells.
+#[derive(Clone, Debug)]
+pub struct PopupCfg {
+    pub width: Size,
+    pub height: Size,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub prefix: KeyCombo,
@@ -46,6 +54,7 @@ pub struct Config {
     /// Extra program names (besides vim, nvim, fzf, ...) that get Ctrl-h/j/k/l themselves.
     pub navigator_apps: Vec<String>,
     pub sidebar: SidebarCfg,
+    pub popup: PopupCfg,
     pub prefix_keys: HashMap<KeyCombo, Action>,
     pub root_keys: HashMap<KeyCombo, Action>,
     pub copy_keys: HashMap<KeyCombo, Action>,
@@ -58,7 +67,15 @@ pub struct Config {
 struct RawConfig {
     options: RawOptions,
     sidebar: RawSidebar,
+    popup: RawPopup,
     keys: RawKeys,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawPopup {
+    width: Option<SizeSpec>,
+    height: Option<SizeSpec>,
 }
 
 #[derive(Deserialize, Default)]
@@ -136,6 +153,13 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("r", "reload-config"),
     ("R", "respawn-pane"),
     ("M-r", "respawn-window"),
+    ("f", "search-windows"),
+    ("P", "toggle-popup"),
+    ("D", "toggle-dock"),
+    ("}", "dock-next"),
+    ("{", "dock-prev"),
+    ("A", "dock-add"),
+    ("X", "dock-close"),
     ("[", "copy-mode"),
     ("PageUp", "copy-mode"),
     ("]", "paste-buffer"),
@@ -177,6 +201,8 @@ const DEFAULT_SIDEBAR_KEYS: &[(&str, &str)] = &[
     ("K", "sidebar-move-up"),
     ("n", "sidebar-new"),
     ("R", "sidebar-respawn"),
+    ("e", "sidebar-export"),
+    ("/", "sidebar-search"),
     ("Tab", "toggle-sidebar-mode"),
     ("q", "sidebar-leave"),
     ("Escape", "sidebar-leave"),
@@ -253,6 +279,7 @@ impl Default for Config {
             root_keys: default_table(DEFAULT_ROOT_KEYS),
             copy_keys: default_table(DEFAULT_COPY_KEYS),
             resize_keys: default_table(DEFAULT_RESIZE_KEYS),
+            popup: PopupCfg { width: Size::Percent(80.0), height: Size::Percent(80.0) },
             sidebar_keys: default_sidebar_keys(Position::Left),
         }
     }
@@ -319,6 +346,12 @@ impl Config {
         }
         if let Some(v) = raw.sidebar.follow {
             sb.follow = v;
+        }
+        if let Some(v) = &raw.popup.width {
+            cfg.popup.width = parse_size(v).map_err(|e| format!("popup.width: {e}"))?;
+        }
+        if let Some(v) = &raw.popup.height {
+            cfg.popup.height = parse_size(v).map_err(|e| format!("popup.height: {e}"))?;
         }
         apply_table(&mut cfg.prefix_keys, &raw.keys.prefix, "prefix")?;
         apply_table(&mut cfg.root_keys, &raw.keys.root, "root")?;

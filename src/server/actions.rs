@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::copy::{base64, CopyMode, Outcome};
 use super::layout::{neighbor, Axis, Node, PaneId, Rect};
-use super::state::{ClientId, Pane, PaneSpec, Prompt, PromptKind, Session, SessionId, Window};
+use super::state::{ClientId, Dock, Extra, Pane, PaneSpec, Prompt, PromptKind, Session, SessionId, Window};
 use super::{Event, Server};
 use crate::action::{Action, CopyCmd, Dir, SidebarCmd};
 use crate::config::{Position, SidebarMode};
@@ -95,6 +95,11 @@ impl Server {
             owner: None,
             cwd: cwd.unwrap_or_default(),
             project: None,
+            pane_command: None,
+            dock: Dock::default(),
+            dock_size: (1, 1),
+            popup: None,
+            popup_shown: false,
         });
         self.had_session = true;
         let si = self.sessions.len() - 1;
@@ -102,11 +107,11 @@ impl Server {
         Ok(id)
     }
 
-    fn session_index(&self, sid: SessionId) -> Option<usize> {
+    pub(super) fn session_index(&self, sid: SessionId) -> Option<usize> {
         self.sessions.iter().position(|s| s.id == sid)
     }
 
-    fn active_cwd(&self, sid: SessionId) -> Option<PathBuf> {
+    pub(super) fn active_cwd(&self, sid: SessionId) -> Option<PathBuf> {
         let s = self.sessions.iter().find(|s| s.id == sid)?;
         let from_pane = self.panes.get(&s.active_window().active).and_then(|p| p.pty.cwd());
         from_pane.or_else(|| Some(s.cwd.clone()).filter(|p| !p.as_os_str().is_empty()))
@@ -116,6 +121,7 @@ impl Server {
         let cwd = self.active_cwd(sid);
         let size = self.sessions.iter().find(|s| s.id == sid).map(|s| s.size).ok_or("no session")?;
         let window = self.make_window(cwd, size)?;
+        self.setup_pane(sid, window.active, None);
         let si = self.session_index(sid).ok_or("no session")?;
         let s = &mut self.sessions[si];
         s.windows.push(window);
@@ -142,6 +148,7 @@ impl Server {
             return Err("pane too small to split".into());
         }
         self.spawn_pane(new_id, cwd, (r.w, r.h))?;
+        self.setup_pane(sid, new_id, None);
         let w = self.sessions[si].active_window_mut();
         w.root = tree;
         w.focus(new_id);
@@ -176,8 +183,25 @@ impl Server {
 
     /// A pane's process exited (or it was killed): remove it and anything left empty.
     pub fn close_pane(&mut self, pid: PaneId) {
+        let extra = self.extra_of(pid);
         if self.panes.remove(&pid).is_none() {
             return;
+        }
+        match extra {
+            Some((si, Extra::Popup)) => {
+                let s = &mut self.sessions[si];
+                s.popup = None;
+                s.popup_shown = false;
+                self.mark_dirty();
+                return;
+            }
+            Some((si, Extra::Dock(i))) => {
+                // The pane is already gone; the entry goes with it.
+                self.sessions[si].dock.entries[i].pane = None;
+                self.remove_dock_entry(si, i);
+                return;
+            }
+            None => {}
         }
         let Some((si, wi)) = self.locate_pane(pid) else { return };
         let sid = self.sessions[si].id;
@@ -240,6 +264,9 @@ impl Server {
             for p in w.root.leaves() {
                 self.panes.remove(&p);
             }
+        }
+        for p in removed.popup.into_iter().chain(removed.dock.entries.iter().filter_map(|e| e.pane)) {
+            self.panes.remove(&p);
         }
         let attached: Vec<ClientId> =
             self.clients.values().filter(|c| c.session == Some(sid)).map(|c| c.id).collect();
@@ -312,8 +339,9 @@ impl Server {
                 Ok(())
             },
             Action::KillPane => {
-                let p = self.sessions[si].active_window().active;
-                self.close_pane(p);
+                if let Some(p) = self.focused_pane(si) {
+                    self.close_pane(p);
+                }
                 Ok(())
             }
             Action::ZoomPane => {
@@ -367,13 +395,14 @@ impl Server {
                 return;
             }
             Action::SendPrefix => {
-                if let (Some(raw), Some(p)) = (trigger.prefix, self.panes.get(&self.sessions[si].active_window().active)) {
+                if let (Some(raw), Some(p)) = (trigger.prefix, self.focused_pane(si).and_then(|id| self.panes.get(&id))) {
                     p.pty.write(raw);
                 }
                 Ok(())
             }
             Action::CopyMode => {
-                if let Some(p) = self.panes.get_mut(&self.sessions[si].active_window().active)
+                if let Some(id) = self.focused_pane(si)
+                    && let Some(p) = self.panes.get_mut(&id)
                     && p.copy.is_none() {
                         p.copy = Some(CopyMode::new(&p.screen));
                     }
@@ -400,8 +429,9 @@ impl Server {
                 Ok(())
             }
             Action::RespawnPane => {
-                let id = self.sessions[si].active_window().active;
-                self.set_prompt(cid, PromptKind::ConfirmRespawnPane(id), String::new(), "respawn pane? (y/n)");
+                if let Some(id) = self.focused_pane(si) {
+                    self.set_prompt(cid, PromptKind::ConfirmRespawnPane(id), String::new(), "respawn pane? (y/n)");
+                }
                 Ok(())
             }
             Action::RespawnWindow => {
@@ -411,6 +441,32 @@ impl Server {
                 Ok(())
             }
             Action::ExportProject => self.export_project(si).map(|p| self.message(cid, format!("exported to {}", p.display()))),
+            Action::SearchWindows => self.start_search(cid),
+            Action::TogglePopup => self.toggle_popup(sid),
+            Action::ToggleDock => self.toggle_dock(sid),
+            Action::FocusDock => self.focus_dock(sid),
+            Action::DockNext => self.step_dock(sid, true),
+            Action::DockPrev => self.step_dock(sid, false),
+            Action::DockAdd => {
+                self.set_prompt(cid, PromptKind::DockAdd(sid), String::new(), "dock command (empty = shell)");
+                Ok(())
+            }
+            Action::DockClose => match self.sessions[si].dock.entries.get(self.sessions[si].dock.active) {
+                Some(e) => {
+                    let label = format!("close dock pane {}? (y/n)", e.name);
+                    self.set_prompt(cid, PromptKind::ConfirmDockClose(sid), String::new(), label);
+                    Ok(())
+                }
+                None => Err("dock is empty".into()),
+            },
+            Action::DockRename => match self.sessions[si].dock.entries.get(self.sessions[si].dock.active) {
+                Some(e) => {
+                    let text = e.name.clone();
+                    self.set_prompt(cid, PromptKind::DockRename(sid), text, "rename dock pane");
+                    Ok(())
+                }
+                None => Err("dock is empty".into()),
+            },
             Action::FocusSidebar => self.enter_sidebar(cid),
             Action::Sidebar(cmd) => self.sidebar_command(cid, cmd),
             Action::PasteBuffer => {
@@ -432,7 +488,7 @@ impl Server {
     }
 
     fn copy_command(&mut self, cid: ClientId, si: usize, cmd: CopyCmd) {
-        let active = self.sessions[si].active_window().active;
+        let Some(active) = self.focused_pane(si) else { return };
         let Some(p) = self.panes.get_mut(&active) else { return };
         let Some(copy) = p.copy.as_mut() else { return };
         match copy.apply(cmd, &p.screen) {
@@ -455,7 +511,7 @@ impl Server {
         if self.paste_text.is_empty() {
             return;
         }
-        let active = self.sessions[si].active_window().active;
+        let Some(active) = self.focused_pane(si) else { return };
         let Some(p) = self.panes.get_mut(&active) else { return };
         p.copy = None;
         let mut data = Vec::new();
@@ -470,7 +526,7 @@ impl Server {
         p.pty.write(data);
     }
 
-    fn set_prompt(&mut self, cid: ClientId, kind: PromptKind, text: String, label: impl Into<String>) {
+    pub(super) fn set_prompt(&mut self, cid: ClientId, kind: PromptKind, text: String, label: impl Into<String>) {
         if let Some(c) = self.clients.get_mut(&cid) {
             c.prompt = Some(Prompt { kind, text, label: label.into() });
         }
@@ -547,8 +603,21 @@ impl Server {
             }
             return;
         }
-        if !self.focus_dir(si, dir) && toward_sidebar {
-            let _ = self.enter_sidebar(cid);
+        let s = &self.sessions[si];
+        let dock_shown = s.dock.visible && !s.dock.entries.is_empty();
+        if s.dock.focused && s.shown_dock_pane().is_some() {
+            // The dock is on the side away from the sidebar: only the way back counts.
+            if toward_sidebar {
+                self.sessions[si].dock.focused = false;
+            }
+            return;
+        }
+        if !self.focus_dir(si, dir) {
+            if toward_sidebar {
+                let _ = self.enter_sidebar(cid);
+            } else if matches!(dir, Dir::Left | Dir::Right) && dock_shown {
+                self.sessions[si].dock.focused = true;
+            }
         }
     }
 
@@ -567,16 +636,15 @@ impl Server {
         self.focus_last_in(si, wi);
     }
 
-    fn write_active(&mut self, si: usize, data: Vec<u8>) {
-        let active = self.sessions[si].active_window().active;
-        if let Some(p) = self.panes.get(&active) {
+    pub(super) fn write_active(&mut self, si: usize, data: Vec<u8>) {
+        if let Some(p) = self.focused_pane(si).and_then(|id| self.panes.get(&id)) {
             p.pty.write(data);
         }
     }
 
     /// Is an editor (one that does its own Ctrl-h/j/k/l navigation) in the pane's foreground?
     fn active_pane_runs_editor(&self, si: usize) -> bool {
-        let active = self.sessions[si].active_window().active;
+        let Some(active) = self.focused_pane(si) else { return false };
         self.panes.get(&active).is_some_and(|p| {
             p.copy.is_none()
                 && p.pty
@@ -589,7 +657,7 @@ impl Server {
     /// Ctrl-h/j/k/l: give the key to an editor if one is running, else move focus.
     fn navigate(&mut self, cid: ClientId, si: usize, dir: Option<Dir>, key: Vec<u8>) {
         let sidebar_focused = self.clients.get(&cid).is_some_and(|c| c.sidebar_focus.is_some());
-        if !sidebar_focused && self.active_pane_runs_editor(si) {
+        if !sidebar_focused && (self.sessions[si].shown_popup().is_some() || self.active_pane_runs_editor(si)) {
             self.write_active(si, key);
             return;
         }
@@ -652,6 +720,18 @@ impl Server {
                 }
             }
             PromptKind::ConfirmKillSession(id) => self.kill_session(id),
+            PromptKind::DockAdd(id) => {
+                if let Err(e) = self.add_dock_entry(id, &text) {
+                    self.message(cid, e);
+                }
+            }
+            PromptKind::DockRename(id) => self.rename_dock_entry(id, text),
+            PromptKind::ConfirmDockClose(id) => {
+                if let Some(si) = self.session_index(id) {
+                    let active = self.sessions[si].dock.active;
+                    self.remove_dock_entry(si, active);
+                }
+            }
             PromptKind::ConfirmRespawnPane(id) => {
                 if let Err(e) = self.respawn_pane(id) {
                     self.message(cid, e);
@@ -692,6 +772,10 @@ impl Server {
         let panes: Vec<PaneId> = s.windows.iter().flat_map(|w| w.root.leaves()).collect();
         for p in panes {
             self.close_pane(p);
+        }
+        // Windows that never started have no panes to close.
+        if self.session_index(sid).is_some() {
+            self.remove_session(sid);
         }
     }
 
@@ -791,6 +875,17 @@ impl Server {
                 }
                 SidebarMode::Sessions => return Err("respawn works on windows".into()),
             },
+            SidebarCmd::Search => {
+                if mode == SidebarMode::Sessions {
+                    return Err("search works on windows".into());
+                }
+                return self.start_search(cid);
+            }
+            SidebarCmd::Export => {
+                let target = if mode == SidebarMode::Sessions { sel } else { si };
+                let path = self.export_project(target)?;
+                self.message(cid, format!("exported to {}", path.display()));
+            }
             SidebarCmd::Rename => match mode {
                 SidebarMode::Windows => {
                     let w = &self.sessions[si].windows[sel];

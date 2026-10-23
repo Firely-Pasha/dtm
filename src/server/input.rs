@@ -50,6 +50,9 @@ impl Server {
         if let Key::Mouse(m) = ev.key {
             return self.handle_mouse(cid, m);
         }
+        if c.search.is_some() {
+            return self.search_key(cid, ev);
+        }
         if let Some(prefix_raw) = c.prefix.take() {
             self.mark_dirty();
             if let Some(action) = self.cfg.prefix_keys.get(&ev.combo()).cloned() {
@@ -98,13 +101,13 @@ impl Server {
     fn active_pane_in_copy_mode(&self, cid: ClientId) -> bool {
         let sid = self.clients.get(&cid).and_then(|c| c.session);
         let Some(s) = sid.and_then(|sid| self.sessions.iter().find(|s| s.id == sid)) else { return false };
-        self.panes.get(&s.active_window().active).is_some_and(|p| p.copy.is_some())
+        self.focused_pane_in(s).and_then(|id| self.panes.get(&id)).is_some_and(|p| p.copy.is_some())
     }
 
     fn forward(&mut self, cid: ClientId, raw: Vec<u8>) {
         let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
         let Some(s) = self.sessions.iter().find(|s| s.id == sid) else { return };
-        if let Some(p) = self.panes.get(&s.active_window().active) {
+        if let Some(p) = self.focused_pane_in(s).and_then(|id| self.panes.get(&id)) {
             p.pty.write(raw);
         }
     }

@@ -42,16 +42,24 @@ impl Server {
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(si) = c.session.and_then(|sid| self.sessions.iter().position(|s| s.id == sid)) else { return };
         let sw = self.sidebar_width(c) as usize;
+        let dw = self.dock_width(c, &self.sessions[si]) as usize;
         let cols = c.cols as usize;
-        let (content_x, sidebar_x) = match self.cfg.sidebar.position {
-            Position::Left => (sw, 0),
-            Position::Right => (0, cols - sw),
+        let (content_x, sidebar_x, dock_x) = match self.cfg.sidebar.position {
+            Position::Left => (sw, 0, cols - dw),
+            Position::Right => (dw, cols - sw, 0),
         };
+        let cw = cols - sw - dw;
         let (x, y) = (m.x as usize, m.y as usize);
         if sw > 0 && x >= sidebar_x && x < sidebar_x + sw {
             return self.sidebar_click(cid, si, m);
         }
-        if x < content_x || x >= content_x + (cols - sw) {
+        if self.sessions[si].shown_popup().is_some() {
+            return self.popup_mouse(si, content_x, m);
+        }
+        if dw > 0 && x >= dock_x && x < dock_x + dw {
+            return self.dock_mouse(si, dock_x, dw, m);
+        }
+        if x < content_x || x >= content_x + cw {
             return;
         }
         let (cx, cy) = (x - content_x, y);
@@ -67,12 +75,60 @@ impl Server {
         });
         let Some((pane_id, r)) = hit else { return };
         let (rx, ry) = (cx - r.x as usize, cy - r.y as usize);
-        if m.kind == MouseKind::Press && self.sessions[si].active_window().active != pane_id {
-            self.sessions[si].active_window_mut().focus(pane_id);
-            let wi = self.sessions[si].active;
-            self.refresh_name(si, wi);
+        if m.kind == MouseKind::Press {
+            self.sessions[si].dock.focused = false;
+            if self.sessions[si].active_window().active != pane_id {
+                self.sessions[si].active_window_mut().focus(pane_id);
+                let wi = self.sessions[si].active;
+                self.refresh_name(si, wi);
+            }
         }
         self.pane_mouse(pane_id, &m, rx, ry);
+        self.mark_dirty();
+    }
+
+    /// Events over the popup go to it; everything else is ignored while it is up.
+    fn popup_mouse(&mut self, si: usize, content_x: usize, m: MouseEvent) {
+        let s = &self.sessions[si];
+        let Some(pane) = s.shown_popup() else { return };
+        let inner = self.popup_inner(s.size);
+        let (x, y) = (m.x as usize, m.y as usize);
+        let (ix, iy) = (content_x + inner.x as usize, inner.y as usize);
+        if x >= ix && y >= iy && x < ix + inner.w as usize && y < iy + inner.h as usize {
+            self.pane_mouse(pane, &m, x - ix, y - iy);
+            self.mark_dirty();
+        }
+    }
+
+    fn dock_mouse(&mut self, si: usize, dock_x: usize, dw: usize, m: MouseEvent) {
+        let sep_left = self.cfg.sidebar.position == Position::Left;
+        let px = if sep_left { dock_x + 1 } else { dock_x };
+        let (x, y) = (m.x as usize, m.y as usize);
+        if x < px || x >= px + dw - 1 {
+            return;
+        }
+        let dock = &self.sessions[si].dock;
+        if y == 0 {
+            if m.kind == MouseKind::Press && m.button == 0 {
+                let names: Vec<&str> = dock.entries.iter().map(|e| e.name.as_str()).collect();
+                let hit = super::render::dock_tabs(&names, dock.active, dw - 1)
+                    .into_iter()
+                    .find(|&(_, x0, x1)| (px + x0..px + x1).contains(&x))
+                    .map(|t| t.0);
+                if let Some(i) = hit {
+                    let d = &mut self.sessions[si].dock;
+                    d.active = i;
+                    d.focused = true;
+                    self.mark_dirty();
+                }
+            }
+            return;
+        }
+        let Some(pane) = self.sessions[si].shown_dock_pane() else { return };
+        if m.kind == MouseKind::Press {
+            self.sessions[si].dock.focused = true;
+        }
+        self.pane_mouse(pane, &m, x - px, y - 1);
         self.mark_dirty();
     }
 
@@ -127,16 +183,17 @@ impl Server {
         }
         let Some(c) = self.clients.get(&cid) else { return };
         let s = &self.sessions[si];
-        let (count, active) = match c.sidebar_mode {
-            SidebarMode::Windows => (s.windows.len(), s.active),
-            SidebarMode::Sessions => (self.sessions.len(), si),
+        let rows = self.sidebar_rows(c, s);
+        let active = match c.sidebar_mode {
+            SidebarMode::Windows => rows.iter().position(|&i| i == s.active).unwrap_or(0),
+            SidebarMode::Sessions => si,
         };
         let has_footer = self.footer_visible(c);
-        let Some(idx) = sidebar::item_at(count, active, c.rows as usize, has_footer, m.y as usize) else { return };
-        let mode = c.sidebar_mode;
+        let Some(row) = sidebar::item_at(rows.len(), active, c.rows as usize, has_footer, m.y as usize) else { return };
+        let (idx, mode) = (rows[row], c.sidebar_mode);
         if let Some(c) = self.clients.get_mut(&cid)
             && c.sidebar_focus.is_some() {
-                c.sidebar_focus = Some(idx);
+                c.sidebar_focus = Some(row);
             }
         match mode {
             SidebarMode::Windows => {
