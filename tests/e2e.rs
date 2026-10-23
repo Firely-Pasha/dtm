@@ -1467,3 +1467,23 @@ async fn project_sidebar_width_is_applied_and_exported_and_o_opens() {
     let yaml = std::fs::read_to_string(&file).unwrap();
     assert!(yaml.contains("sidebar:") && yaml.contains("width: 35"), "{yaml}");
 }
+
+#[tokio::test]
+async fn resizing_shows_the_size_until_the_repeat_window_ends() {
+    let env = Env::new("resize-badge", "[options]\nrepeat_time = 300\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send("stty size\r");
+    h.wait_for("split", |t| t.lines().any(|l| l.contains("30 ") && l.trim_end().ends_with(|c: char| c.is_ascii_digit()))).await;
+    assert!(!h.text().contains('×'), "no indicator before resizing");
+    h.send(&format!("{CTRL_A}h"));
+    h.wait_for("size badge", |t| t.contains("×30")).await;
+    h.wait_for("badge gone", |t| !t.contains('×')).await;
+
+    // The sidebar shows its width in columns.
+    h.send(&format!("{CTRL_A}w"));
+    h.send(&format!("{CTRL_A}l"));
+    h.wait_for("sidebar badge", |t| t.contains("29 cols")).await;
+    h.wait_for("sidebar badge gone", |t| !t.contains("29 cols")).await;
+}

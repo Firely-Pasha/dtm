@@ -197,6 +197,17 @@ pub fn draw_popup(canvas: &mut Canvas, ox: usize, outer: Rect, pane: Option<&Pan
     draw_pane_view(canvas, pane?, (x + 1, y + 1, w - 2, h - 2), true)
 }
 
+/// A small label in the middle of `area` (x, y, w, h), e.g. the size of a pane being resized.
+pub fn draw_badge(canvas: &mut Canvas, (x, y, w, h): (usize, usize, usize, usize), text: &str) {
+    let label = format!(" {text} ");
+    let lw = label.width();
+    if w < lw || h == 0 {
+        return;
+    }
+    let attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE | flags::BOLD };
+    canvas.put_str(x + (w - lw) / 2, y + h / 2, &label, attrs, lw);
+}
+
 /// Split `text` into lines of at most `width` columns, breaking at spaces.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();

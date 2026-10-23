@@ -339,6 +339,14 @@ impl Server {
                 if let Some(c) = self.clients.get_mut(&cid) {
                     c.resize_until = (repeat > 0).then(|| Instant::now() + Duration::from_millis(repeat));
                 }
+                if repeat > 0 {
+                    // The size indicator goes away when the repeat window ends.
+                    let tx = self.events.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(repeat + 30)).await;
+                        let _ = tx.send(Event::Redraw);
+                    });
+                }
                 Ok(())
             },
             Action::KillPane => {

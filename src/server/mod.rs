@@ -50,6 +50,8 @@ pub enum Event {
     Gone { id: ClientId },
     Pane { id: PaneId, ev: PtyEvent },
     KeyFlush { id: ClientId },
+    /// Draw again (an indicator timed out).
+    Redraw,
 }
 
 pub struct Server {
@@ -212,6 +214,7 @@ impl Server {
             Event::Msg { id, msg } => self.client_msg(id, msg),
             Event::Pane { id, ev: PtyEvent::Output(data) } => self.pane_output(id, data),
             Event::Pane { id, ev: PtyEvent::Exited } => self.close_pane(id),
+            Event::Redraw => self.mark_dirty(),
             Event::KeyFlush { id } => {
                 if let Some(c) = self.clients.get_mut(&id) {
                     c.flush_scheduled = false;
@@ -749,6 +752,22 @@ impl Server {
         }
         if c.sidebar_focus.is_some() {
             canvas.cursor = None;
+        }
+        if c.resize_until.is_some_and(|t| Instant::now() < t) && s.shown_popup().is_none() {
+            // While resizing, say how big the thing being resized is.
+            let w = s.active_window();
+            let badge = if c.sidebar_focus.is_some() {
+                Some((format!("{sw} cols"), sidebar_x, 0, sw, rows))
+            } else if s.dock.focused && s.shown_dock_pane().is_some() {
+                Some((format!("{dw} cols"), dock_x, 0, dw, rows))
+            } else {
+                w.rects(s.size).into_iter().find(|(id, _)| *id == w.active).map(|(_, r)| {
+                    (format!("{}×{}", r.w, r.h), content_x + r.x as usize, r.y as usize, r.w as usize, r.h as usize)
+                })
+            };
+            if let Some((text, x, y, bw, bh)) = badge {
+                render::draw_badge(&mut canvas, (x, y, bw, bh), &text);
+            }
         }
         if let Some(p) = &c.prompt {
             // Prompts are a box in the middle of the screen, over everything.

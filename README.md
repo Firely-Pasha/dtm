@@ -47,6 +47,8 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
 (see below).
 
+**Resizing**: while you resize (and for the repeat window after it), the middle of the pane shows its size as `columns×rows`, and the sidebar or dock shows its width, so panes in different windows can be lined up.
+
 **Resizing**: while the sidebar or the dock has focus, `<prefix> h` / `l` move its inner edge to resize it, and then plain `h` / `l` keep resizing by one cell for a second, as for panes. Both widths belong to the session (every client and later attach sees them); the dock's is also exported. Otherwise `<prefix> h j k l` resizes the focused pane by 5 cells, then plain `h j k l` keep
 resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
 don't have to press the prefix again for every step. Any other key ends it.
