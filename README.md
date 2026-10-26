@@ -417,3 +417,7 @@ mode. `tests/e2e.rs` runs the real binary on a pty and checks what a terminal
 would show: attach/detach/reattach, splits, windows, the sidebar, config
 reload, remapped keys, multiple clients, copy mode, mouse, and `less`/`vim`
 running inside dtm.
+
+## License
+
+[MIT](LICENSE)
