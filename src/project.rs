@@ -798,10 +798,19 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_example_is_valid() {
+    fn the_shipped_example_is_valid_and_shows_every_feature() {
         let p = plan(include_str!("../examples/project.dtm.yaml"), "/code/app");
-        assert_eq!(p.windows.len(), 3);
-        assert!(!p.windows[1].lazy);
+        assert_eq!(p.name, "app");
+        assert_eq!(p.windows.len(), 5);
+        let groups: Vec<_> = p.groups.iter().map(|g| (g.name.as_str(), g.tag)).collect();
+        assert_eq!(groups, vec![("code", Some('g')), ("ops", None), ("main", None)]);
+        assert_eq!(p.dock.as_ref().map(|d| d.panes.len()), Some(2));
+        assert_eq!(p.pane_command.as_deref(), Some("source .venv/bin/activate"));
+        assert_eq!(p.sidebar_width, Some(28));
+        // the file is already in group order, so the windows keep their order
+        let names: Vec<_> = p.windows.iter().map(|w| w.name.as_deref().unwrap()).collect();
+        assert_eq!(names, vec!["edit", "test", "server", "logs", "shell"]);
+        assert!(!p.windows[2].lazy && p.windows[0].lazy);
         assert_eq!(p.windows[0].tree.leaves().len(), 3);
     }
 

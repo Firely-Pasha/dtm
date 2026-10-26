@@ -165,7 +165,7 @@ dtm query [-t PANE] '#{window_zoomed_flag}'  # also pane_at_left/right/top/botto
 
 A project file describes a session: its windows, how each window is split,
 where each pane starts and what it runs. See
-[`examples/project.dtm.yaml`](examples/project.dtm.yaml).
+[`examples/project.dtm.yaml`](examples/project.dtm.yaml), which uses every key.
 
 ```yaml
 name: app                 # session name (default: the directory's name)
@@ -370,7 +370,7 @@ Prompts (rename, confirmations, the dock command) are a box in the middle of the
 ## Configuration
 
 `~/.config/dtm/config.toml` (or `$DTM_CONFIG`). See
-[config.example.toml](config.example.toml) for every option and binding; it is
+[examples/config.toml](examples/config.toml) for every option and binding; it is
 checked by the test suite to match the built-in defaults.
 
 - `options.shell` is the program started in new panes (default `$SHELL`, then

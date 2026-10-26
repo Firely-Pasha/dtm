@@ -1,31 +1,64 @@
-# Save as project.dtm.yaml in your project, then run `dtm` (or `dtm open`) there.
-name: app                 # session name (default: the directory's name)
-# root: ~/code/app        # default: the directory of this file
-# lazy: true              # windows start when first shown (default)
-# pane_command: source .venv/bin/activate   # typed into every pane before its command
-sidebar:
-  width: 28               # saved here when you export a resized sidebar
-  # visible: true
-dock:                     # session-wide panes in a side panel (<prefix> D shows it)
+# dtm project example: every key, with what it does.
+# Copy it to project.dtm.yaml in your project and run `dtm` (or `dtm open`) there,
+# or save it as a named project with `dtm project edit NAME` and run `dtm open NAME`.
+# Only `windows` is required.
+
+name: app                 # session name (default: the name of the directory)
+root: ~/code/app          # default: the directory of this file; saved projects need one
+lazy: true                # windows start when you open them (false: all at once)
+
+# Typed into every pane's shell before the pane's own command, also in panes you
+# create later (splits, new windows, the popup, the dock) and respawned ones.
+pane_command: source .venv/bin/activate
+
+sidebar:                  # this project's sidebar (exporting writes the width you resized to)
+  width: 28               # 4-200
+  visible: true
+
+# Window groups, in order. A window picks one with `group`, and Ctrl-a <tag> <n> opens
+# window n of a group (Ctrl-a g 1 opens "edit" below). Tags are one letter and optional: dtm picks a
+# free one when missing, or when yours is already a prefix key.
+groups:
+  - {name: code, tag: g}
+  - {name: ops}
+
+# Session-wide panes in a side panel; Ctrl-a D shows it, { and } switch between them.
+dock:
+  width: 35%              # N% of the terminal or a number of cells
   visible: false
-  width: 35%
   panes:
-    - name: git
+    - name: git           # default: the first word of the command
       command: lazygit
+    - command: claude
+      path: .             # relative to root, like window panes
+
 windows:
   - name: edit
+    group: code           # windows without `group` are in `main`
     focus: true           # shown first (default: the first window)
     layout:
       split: columns      # columns = side by side, rows = stacked
       panes:
         - command: nvim
-          size: 65%
-          focus: true
+          size: 65%       # N% or cells; the rest is shared equally
+          focus: true     # the pane that starts focused
         - split: rows
           panes:
             - command: cargo watch -x check
-            - path: scripts   # relative to the window/root; ~ and absolute work too
+            - path: scripts   # relative to the window's path, then root; ~ and absolute work
+
+  - name: test
+    group: code
+    path: tests           # the window's directory
+    command: cargo test   # one pane: path and command straight on the window
+
   - name: server
+    group: ops
     command: cargo run
-    lazy: false           # start at once instead of on first view
-  - name: shell
+    lazy: false           # start at once instead of when first opened
+
+  - name: logs
+    group: ops
+    command: journalctl -f
+
+  - name: shell           # no command: just a shell in the project's root

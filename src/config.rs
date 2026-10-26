@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn example_config_parses_and_matches_defaults() {
-        let c = Config::from_toml(include_str!("../config.example.toml")).unwrap();
+        let c = Config::from_toml(include_str!("../examples/config.toml")).unwrap();
         let d = Config::default();
         assert_eq!(c.prefix, d.prefix);
         assert_eq!(c.history_limit, d.history_limit);
