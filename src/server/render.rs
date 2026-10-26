@@ -405,6 +405,7 @@ mod tests {
             bell: false,
             plan: None,
             pending: false,
+            group: 1,
         }
     }
 

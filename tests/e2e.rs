@@ -81,7 +81,8 @@ async fn attach_split_detach_reattach() {
     // sidebar on the left: header, mode label and a separator column
     let text = h.text();
     assert!(text.lines().next().unwrap().contains("0"), "{text}");
-    assert!(text.contains("windows"));
+    assert!(!text.contains("windows"), "{text}");
+    assert!(text.lines().nth(1).unwrap().contains("main"), "{text}");
     assert_eq!(h.screen.cell(23, 5).ch, '│');
 
     h.send(&format!("{CTRL_A}|"));
@@ -547,7 +548,7 @@ async fn shift_v_selects_whole_lines() {
     h.wait_exit().await;
 }
 
-const SIDEBAR_HINT: &str = "j/k ⏎ x r n / e q";
+const SIDEBAR_HINT: &str = "j/k ⏎ x r g t n / e q";
 
 #[tokio::test]
 async fn sidebar_takes_focus_from_the_panes() {
@@ -1254,7 +1255,8 @@ async fn search_filters_windows_fuzzily() {
     h.wait_text("/").await;
     h.send("srv");
     h.wait_for("filtered to the server window", |t| t.contains("2 server") && !t.contains("1 alpha") && !t.contains("3 shell")).await;
-    h.wait_text("SRV7").await;
+    // A window that has not started is not previewed while searching; Enter starts it.
+    assert!(!h.text().contains("SRV7"), "{}", h.text());
     h.send("\r");
     h.wait_for("search closed", |t| !t.contains("⏎ open") && t.contains("1 alpha") && t.contains("SRV7")).await;
 
@@ -1701,4 +1703,119 @@ async fn maximize_fills_the_terminal_with_a_pane_dock_pane_popup_or_sidebar() {
     h.wait_for("sidebar normal", |t| !t.contains(SIDEBAR_HINT) && t.contains("1 sh")).await;
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
+}
+
+/// The sidebar's lines (below its two header rows), trimmed.
+fn sidebar_lines(h: &Harness, count: usize) -> Vec<String> {
+    h.screen.text().iter().skip(2).take(count).map(|l| {
+            let words: Vec<&str> = l.split('│').next().unwrap().trim_start_matches([' ', '›']).trim_end_matches(['…', ' ']).split_whitespace().collect();
+            words.join(" ")
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn groups_tag_windows_and_open_them_by_tags() {
+    let env = Env::new("groups-tags", "[sidebar]\nwidth = 40\n");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: gr\ngroups:\n  - {name: code, tag: g}\n  - {name: ops, tag: u}\nwindows:\n  - {name: edit, group: code, command: \"echo EDIT$((1+0))\"}\n  - {name: logs, group: ops, command: \"echo LOGS$((1+0))\"}\n  - {name: test, group: code, command: \"echo TEST$((1+0))\"}\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("EDIT1").await;
+    // A group's windows sit together under its heading, tagged by their place in it.
+    assert_eq!(sidebar_lines(&h, 5), ["code g", "1 edit", "2 test", "ops u", "1 logs"], "{}", h.text());
+
+    h.send(&format!("{CTRL_A}u1"));
+    h.wait_for("logs", |t| t.contains("LOGS1") && !t.contains("EDIT1")).await;
+    h.send(&format!("{CTRL_A}g2"));
+    h.wait_for("test", |t| t.contains("TEST1") && !t.contains("LOGS1")).await;
+    // A digit alone is the first group's window.
+    h.send(&format!("{CTRL_A}1"));
+    h.wait_for("edit", |t| t.contains("EDIT1") && !t.contains("TEST1")).await;
+    h.send(&format!("{CTRL_A}2"));
+    h.wait_for("test again", |t| t.contains("TEST1") && !t.contains("EDIT1")).await;
+    h.send(&format!("{CTRL_A}3"));
+    h.send(&format!("{CTRL_A}u9"));
+    h.wait_text("no window 9 in group ops").await;
+}
+
+#[tokio::test]
+async fn group_tags_are_checked_for_shortcut_conflicts() {
+    let env = Env::new("groups-conflict", "[sidebar]\nwidth = 40\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("t");
+    h.wait_text("tag for group main").await;
+    h.send("c\r");
+    h.wait_text("C-a c is already bound").await;
+    h.send("t");
+    h.wait_text("tag for group main").await;
+    h.send("1\r");
+    h.wait_text("a group tag is one letter").await;
+    h.send("te\r");
+    h.send("q");
+    h.send(&format!("{CTRL_A}e"));
+    h.wait_text("group main: window?").await;
+    h.send("1");
+    h.wait_for("hint gone", |t| !t.contains("window?")).await;
+}
+
+#[tokio::test]
+async fn new_group_rename_and_moving_windows_between_groups() {
+    let env = Env::new("groups-new", "[sidebar]\nwidth = 40\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send(&format!("{CTRL_A}C"));
+    h.wait_text("new group").await;
+    h.send("ops\r");
+    h.wait_for("second group", |t| t.contains(" ops") && t.contains("main")).await;
+    let lines = sidebar_lines(&h, 5);
+    assert!(lines[0].starts_with("main ") && lines[1] == "1 sh" && lines[2] == "2 sh", "{lines:?}");
+    assert!(lines[3].starts_with("ops ") && lines[4] == "1 sh", "{lines:?}");
+
+    // Rename the group of the selected window.
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("g");
+    h.wait_text("rename group").await;
+    h.send("\x7f\x7f\x7fjobs\r");
+    h.wait_for("renamed", |t| t.contains(" jobs") && !t.contains(" ops")).await;
+
+    // Moving main's last window down puts it into the next group.
+    h.send("kJ");
+    h.wait_for("joined", |t| t.lines().nth(6).is_some_and(|l| l.contains("2 sh"))).await;
+    let lines = sidebar_lines(&h, 5);
+    assert!(lines[0].starts_with("main ") && lines[1] == "1 sh", "{lines:?}");
+    assert!(lines[2].starts_with("jobs ") && lines[3] == "1 sh" && lines[4] == "2 sh", "{lines:?}");
+
+    // Moving the only window of a group takes the whole group along.
+    h.send("kJ");
+    h.wait_for("groups swapped", |t| {
+        let first = t.lines().nth(2).unwrap_or("");
+        first.contains("jobs")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn window_number_keys_move_the_focused_sidebar_selection() {
+    let env = Env::new("sidebar-follows-keys", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}c"));
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("3 sh").await;
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.wait_text("›3 sh").await;
+    h.send(&format!("{CTRL_A}1"));
+    h.wait_text("›1 sh").await;
+    h.send(&format!("{CTRL_A}2"));
+    h.wait_text("›2 sh").await;
 }

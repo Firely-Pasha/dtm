@@ -39,7 +39,8 @@ height = "80%"
 "&" = "kill-window"
 "n" = "next-window"
 "p" = "prev-window"
-"1" = "select-window 1"       # ... "9" = "select-window 9"
+"1" = "select-window 1"       # ... "9" = "select-window 9" (the first group's windows)
+"C" = "new-group"            # asks for a name; Ctrl-a <group tag> <window tag> opens a window
 "," = "rename-window"
 "|" = "split-vertical"        # panes side by side
 "-" = "split-horizontal"      # panes stacked
@@ -128,6 +129,8 @@ height = "80%"
 "R" = "sidebar-respawn"      # asks y/n
 "e" = "sidebar-export"        # write the session to its project file (asks y/n)
 "/" = "sidebar-search"        # filter windows by typing; Enter opens, Esc cancels
+"g" = "sidebar-rename-group"  # the selected window's group
+"t" = "sidebar-group-tag"     # one letter; refused when a prefix key or group has it
 "Tab" = "toggle-sidebar-mode"
 "q" = "sidebar-leave"
 

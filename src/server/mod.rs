@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod copy;
 pub mod extra;
+pub mod groups;
 pub mod input;
 pub mod ipc;
 pub mod mouse;
@@ -33,7 +34,7 @@ use crate::pty::PtyEvent;
 use crate::term::canvas::Canvas;
 use crate::term::cell::{Attrs, Cell, Color};
 use layout::PaneId;
-use sidebar::{Footer, Item, SidebarView};
+use sidebar::{Footer, Item, Line, SidebarView};
 use state::{Client, ClientId, Pane, Session, SessionId};
 
 /// Content narrower than this hides the sidebar.
@@ -655,12 +656,29 @@ impl Server {
         }
     }
 
+    /// A window's sidebar label: its tag (after its group's, while searching several groups) and name.
+    fn window_label(s: &Session, wi: usize, with_group: bool) -> String {
+        let tag = s.window_tag(wi).unwrap_or(' ');
+        let name = s.windows[wi].name();
+        if with_group {
+            format!("{}{tag} {name}", s.groups[s.group_of(wi)].tag)
+        } else {
+            format!("{tag} {name}")
+        }
+    }
+
     /// The window or session indices the sidebar lists, in row order.
     pub fn sidebar_rows(&self, c: &Client, s: &Session) -> Vec<usize> {
         match (c.sidebar_mode, &c.search) {
             (SidebarMode::Windows, Some(q)) => {
-                let labels: Vec<String> =
-                    s.windows.iter().enumerate().map(|(i, w)| format!("{} {}", i + 1, w.name())).collect();
+                let grouped = s.groups.len() > 1;
+                // Typing a group's name finds its windows too.
+                let labels: Vec<String> = (0..s.windows.len())
+                    .map(|i| match grouped {
+                        true => format!("{} {}", Self::window_label(s, i, true), s.groups[s.group_of(i)].name),
+                        false => Self::window_label(s, i, false),
+                    })
+                    .collect();
                 fuzzy::rank(&q.query, labels.iter().map(String::as_str))
             }
             (SidebarMode::Windows, None) => (0..s.windows.len()).collect(),
@@ -668,14 +686,39 @@ impl Server {
         }
     }
 
+    /// What each sidebar line shows: the rows of `sidebar_rows`, with a heading before each
+    /// group's windows when there are several groups (and no search).
+    pub fn sidebar_lines(&self, c: &Client, s: &Session) -> Vec<Line> {
+        let rows = self.sidebar_rows(c, s);
+        let headings = c.sidebar_mode == SidebarMode::Windows && c.search.is_none() && s.groups.len() > 1;
+        let mut lines = Vec::with_capacity(rows.len() + s.groups.len());
+        for (row, &i) in rows.iter().enumerate() {
+            if headings && s.group_windows(s.group_of(i)).start == i {
+                lines.push(Line::Group(s.group_of(i)));
+            }
+            lines.push(Line::Row(row));
+        }
+        lines
+    }
+
     fn sidebar_view(&self, c: &Client, s: &Session) -> SidebarView {
+        let mut subtag = None;
         let (header, subheader, items) = match c.sidebar_mode {
             SidebarMode::Windows => {
+                let rows = self.sidebar_rows(c, s);
+                let grouped = c.search.is_some() && s.groups.len() > 1;
                 let mut items: Vec<Item> = self
-                    .sidebar_rows(c, s)
+                    .sidebar_lines(c, s)
                     .into_iter()
-                    .enumerate()
-                    .map(|(row, i)| {
+                    .map(|line| {
+                        let row = match line {
+                            Line::Row(row) => row,
+                            Line::Group(gi) => {
+                                let g = &s.groups[gi];
+                                return Item::heading(g.name.clone(), g.tag);
+                            }
+                        };
+                        let i = rows[row];
                         let w = &s.windows[i];
                         let mut marks = String::new();
                         if w.zoomed {
@@ -690,17 +733,23 @@ impl Server {
                         if w.pending {
                             marks.push('…');
                         }
-                        Item { label: format!("{} {}", i + 1, w.name()), marks, active: i == s.active, selected: c.sidebar_focus == Some(row) }
+                        let label = Self::window_label(s, i, grouped);
+                        Item { label, marks, active: i == s.active, selected: c.sidebar_focus == Some(row), heading: false }
                     })
                     .collect();
                 let sub = match &c.search {
                     Some(q) => {
                         if items.is_empty() {
-                            items.push(Item { label: "no match".into(), marks: String::new(), active: false, selected: false });
+                            items.push(Item { label: "no match".into(), marks: String::new(), active: false, selected: false, heading: false });
                         }
                         format!("/{}", q.query)
                     }
-                    None => "windows".to_string(),
+                    // One group: its title is the subheader. Several: each has a heading in the list.
+                    None if s.groups.len() == 1 => {
+                        subtag = Some(s.groups[0].tag);
+                        s.groups[0].name.clone()
+                    }
+                    None => String::new(),
                 };
                 (s.name.clone(), sub, items)
             }
@@ -716,6 +765,7 @@ impl Server {
                             marks: format!("{}w{}", o.windows.len(), if elsewhere { "*" } else { "" }),
                             active: o.id == s.id,
                             selected: c.sidebar_focus == Some(i),
+                            heading: false,
                         }
                     })
                     .collect();
@@ -726,11 +776,11 @@ impl Server {
             Some((m, _)) => Some(Footer { text: m.clone(), prompt: false }),
             None if c.search.is_some() => Some(Footer { text: "⏎ open  esc back".to_string(), prompt: false }),
             None if c.sidebar_focus.is_some() => {
-                Some(Footer { text: "j/k ⏎ x r n / e q".to_string(), prompt: false })
+                Some(Footer { text: "j/k ⏎ x r g t n / e q".to_string(), prompt: false })
             }
             None => None,
         };
-        SidebarView { header, subheader, items, footer, focused: c.sidebar_focus.is_some() }
+        SidebarView { header, subheader, subtag, items, footer, focused: c.sidebar_focus.is_some() }
     }
 
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {

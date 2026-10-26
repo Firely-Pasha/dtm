@@ -25,7 +25,19 @@ pub struct ProjectFile {
     pub dock: Option<DockSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar: Option<SidebarSpec>,
+    /// Window groups, in order; a window's `group` may also name one that is not listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<GroupSpec>>,
     pub windows: Vec<WindowSpec>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GroupSpec {
+    pub name: String,
+    /// One letter; chosen when missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
 }
 
 /// Sidebar settings for this project's session.
@@ -65,6 +77,9 @@ pub struct DockPaneSpec {
 pub struct WindowSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The group this window belongs to (`main` when missing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -150,8 +165,16 @@ impl PlanNode {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PlanWindow {
     pub name: Option<String>,
+    /// `None` is the default group.
+    pub group: Option<String>,
     pub lazy: bool,
     pub tree: PlanNode,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PlanGroup {
+    pub name: String,
+    pub tag: Option<char>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -175,6 +198,8 @@ pub const DEFAULT_DOCK_WIDTH: Size = Size::Percent(35.0);
 pub struct Plan {
     pub name: String,
     pub root: PathBuf,
+    /// Empty when the project has no groups (one default group).
+    pub groups: Vec<PlanGroup>,
     pub windows: Vec<PlanWindow>,
     /// Index of the window shown first.
     pub focus: usize,
@@ -327,8 +352,30 @@ pub fn validate(file: &ProjectFile) -> Result<(), String> {
             parse_size(w).map_err(|e| format!("dock.width: {e}"))?;
         }
     }
+    let mut names: Vec<&str> = Vec::new();
+    let mut tags: Vec<char> = Vec::new();
+    for (i, g) in file.groups.iter().flatten().enumerate() {
+        let at = format!("groups[{i}]");
+        if g.name.trim().is_empty() {
+            return Err(format!("{at}: needs a name"));
+        }
+        if names.contains(&g.name.as_str()) {
+            return Err(format!("{at}: duplicate group {:?}", g.name));
+        }
+        names.push(&g.name);
+        if let Some(t) = &g.tag {
+            let tag = group_tag(t).ok_or_else(|| format!("{at}.tag: must be one letter"))?;
+            if tags.contains(&tag) {
+                return Err(format!("{at}.tag: {tag} is used twice"));
+            }
+            tags.push(tag);
+        }
+    }
     for (i, w) in file.windows.iter().enumerate() {
         let at = format!("windows[{i}]");
+        if w.group.as_deref().is_some_and(|g| g.trim().is_empty()) {
+            return Err(format!("{at}: group is empty"));
+        }
         if let Some(l) = &w.layout {
             if w.command.is_some() {
                 return Err(format!("{at}: use either `command` or `layout`, not both"));
@@ -338,6 +385,18 @@ pub fn validate(file: &ProjectFile) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// A group tag: exactly one ASCII letter.
+pub fn group_tag(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii_alphabetic() => Some(c),
+        _ => None,
+    }
+}
+
+/// The group of a window that does not name one.
+pub const DEFAULT_GROUP: &str = "main";
 
 fn node_to_plan(n: &NodeSpec, inherited: &Path, base_home: (&Path, &Path)) -> PlanNode {
     let (_, home) = base_home;
@@ -375,9 +434,28 @@ pub fn resolve(file: &ProjectFile, file_dir: &Path, home: &Path) -> Plan {
         .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "project".into());
     let default_lazy = file.lazy.unwrap_or(true);
-    let windows: Vec<PlanWindow> = file
-        .windows
+    let grouped = file.groups.is_some() || file.windows.iter().any(|w| w.group.is_some());
+    let group_name = |w: &WindowSpec| w.group.clone().unwrap_or_else(|| DEFAULT_GROUP.to_string());
+    // Listed groups first, then the others as the windows mention them.
+    let mut groups: Vec<PlanGroup> = Vec::new();
+    if grouped {
+        for g in file.groups.iter().flatten() {
+            groups.push(PlanGroup { name: g.name.clone(), tag: g.tag.as_deref().and_then(group_tag) });
+        }
+        for w in &file.windows {
+            let name = group_name(w);
+            if !groups.iter().any(|g| g.name == name) {
+                groups.push(PlanGroup { name, tag: None });
+            }
+        }
+    }
+    let rank = |w: &WindowSpec| groups.iter().position(|g| g.name == group_name(w)).unwrap_or(0);
+    // A group's windows sit together; the file's order is kept inside each group.
+    let mut order: Vec<usize> = (0..file.windows.len()).collect();
+    order.sort_by_key(|&i| rank(&file.windows[i]));
+    let windows: Vec<PlanWindow> = order
         .iter()
+        .map(|&i| &file.windows[i])
         .map(|w| {
             let wpath = match &w.path {
                 Some(p) => expand(p, &root, home),
@@ -387,10 +465,11 @@ pub fn resolve(file: &ProjectFile, file_dir: &Path, home: &Path) -> Plan {
                 Some(l) => node_to_plan(l, &wpath, (&root, home)),
                 None => PlanNode::Pane { cwd: wpath, command: w.command.clone(), focus: false },
             };
-            PlanWindow { name: w.name.clone(), lazy: w.lazy.unwrap_or(default_lazy), tree }
+            let group = grouped.then(|| group_name(w));
+            PlanWindow { name: w.name.clone(), group, lazy: w.lazy.unwrap_or(default_lazy), tree }
         })
         .collect();
-    let focus = file.windows.iter().position(|w| w.focus == Some(true)).unwrap_or(0);
+    let focus = order.iter().position(|&i| file.windows[i].focus == Some(true)).unwrap_or(0);
     let dock = file.dock.as_ref().map(|d| PlanDock {
         width: d.width.as_ref().and_then(|w| parse_size(w).ok()).unwrap_or(DEFAULT_DOCK_WIDTH),
         visible: d.visible.unwrap_or(false),
@@ -408,6 +487,7 @@ pub fn resolve(file: &ProjectFile, file_dir: &Path, home: &Path) -> Plan {
     Plan {
         name,
         root,
+        groups,
         windows,
         focus,
         pane_command: file.pane_command.clone(),
@@ -556,6 +636,8 @@ fn spec_of(node: &PlanNode, inherited: &Path, base: &Path, home: &Path, single_l
 /// `root` is never written: paths are relative to the file's own directory.
 pub fn from_plan(plan: &Plan, base: &Path, home: &Path) -> ProjectFile {
     let base = clean(base);
+    // A lone default group is what a file without groups means.
+    let write_groups = plan.groups.len() > 1 || plan.groups.first().is_some_and(|g| g.name != DEFAULT_GROUP);
     let windows = plan
         .windows
         .iter()
@@ -571,6 +653,7 @@ pub fn from_plan(plan: &Plan, base: &Path, home: &Path) -> ProjectFile {
             };
             let mut spec = WindowSpec {
                 name: w.name.clone(),
+                group: w.group.clone().filter(|_| write_groups),
                 path,
                 focus: (i == plan.focus && plan.windows.len() > 1 && i != 0).then_some(true),
                 ..Default::default()
@@ -606,6 +689,12 @@ pub fn from_plan(plan: &Plan, base: &Path, home: &Path) -> ProjectFile {
         dock,
         sidebar: (plan.sidebar_width.is_some() || plan.sidebar_visible.is_some())
             .then_some(SidebarSpec { width: plan.sidebar_width, visible: plan.sidebar_visible }),
+        groups: write_groups.then(|| {
+            plan.groups
+                .iter()
+                .map(|g| GroupSpec { name: g.name.clone(), tag: g.tag.map(String::from) })
+                .collect()
+        }),
         windows,
     }
 }
@@ -664,6 +753,8 @@ pub fn template(root: &Path) -> String {
 # dtm project. Open it with `dtm open NAME`.
 root: {root}
 # lazy: true              # windows start when first shown (false: all at once)
+# groups:                 # optional; a window says `group: NAME` (default: main)
+#   - {{name: main, tag: m}}  # the tag is one letter: Ctrl-a m 1 opens window 1 of the group
 windows:
   - name: shell
   # - name: edit
@@ -807,14 +898,17 @@ mod tests {
             dock: None,
             sidebar_width: None,
             sidebar_visible: None,
+            groups: vec![],
             windows: vec![
                 PlanWindow {
                     name: Some("a".into()),
+                    group: None,
                     lazy: true,
                     tree: PlanNode::Pane { cwd: "/r/x".into(), command: Some("vim".into()), focus: true },
                 },
                 PlanWindow {
                     name: None,
+                    group: None,
                     lazy: true,
                     tree: PlanNode::Pane { cwd: "/r".into(), command: None, focus: true },
                 },
@@ -838,6 +932,7 @@ mod tests {
             pane_command: None,
             dock: None,
             sidebar: None,
+            groups: None,
             windows: vec![WindowSpec { name: Some("a".into()), ..Default::default() }, WindowSpec::default()],
         };
         let m = merge(&old, new);
@@ -862,8 +957,10 @@ mod tests {
             dock: None,
             sidebar_width: None,
             sidebar_visible: None,
+            groups: vec![],
             windows: vec![PlanWindow {
                 name: Some("a".into()),
+                group: None,
                 lazy: true,
                 tree: PlanNode::Pane { cwd: "/code/app/src".into(), command: None, focus: true },
             }],
@@ -939,5 +1036,39 @@ mod tests {
         assert!(find(None, &tmp, &cfg).is_err());
         assert_eq!(list_named(&cfg), vec!["mine".to_string()]);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn groups_order_the_windows_and_survive_an_export() {
+        let text = "groups:\n  - {name: ops, tag: u}\nwindows:\n  - {name: a}\n  - {name: b, group: ops, focus: true}\n  - {name: c, group: ops}\n  - {name: d, group: dev}\n";
+        let p = plan(text, "/r");
+        let names: Vec<_> = p.groups.iter().map(|g| (g.name.as_str(), g.tag)).collect();
+        assert_eq!(names, vec![("ops", Some('u')), ("main", None), ("dev", None)]);
+        let order: Vec<_> = p.windows.iter().map(|w| (w.name.as_deref().unwrap(), w.group.as_deref().unwrap())).collect();
+        assert_eq!(order, vec![("b", "ops"), ("c", "ops"), ("a", "main"), ("d", "dev")]);
+        assert_eq!(p.focus, 0, "focus follows the window it named");
+        let f = from_plan(&p, Path::new("/r"), Path::new(HOME));
+        assert_eq!(f.groups.as_ref().unwrap().len(), 3);
+        let again = resolve(&parse(&serde_norway::to_string(&f).unwrap()).unwrap(), Path::new("/r"), Path::new(HOME));
+        assert_eq!(again.windows, p.windows);
+        assert_eq!(again.groups[0].tag, Some('u'));
+    }
+
+    #[test]
+    fn a_project_without_groups_stays_without_them() {
+        let p = plan("windows:\n  - {name: a}\n", "/r");
+        assert!(p.groups.is_empty() && p.windows[0].group.is_none());
+        let f = from_plan(&p, Path::new("/r"), Path::new(HOME));
+        assert!(f.groups.is_none() && f.windows[0].group.is_none());
+    }
+
+    #[test]
+    fn rejects_bad_groups() {
+        let err = |t: &str| parse(t).unwrap_err();
+        assert!(err("groups: [{name: a, tag: ab}]\nwindows: [{}]").contains("one letter"));
+        assert!(err("groups: [{name: a, tag: '1'}]\nwindows: [{}]").contains("one letter"));
+        assert!(err("groups: [{name: a, tag: x}, {name: b, tag: x}]\nwindows: [{}]").contains("twice"));
+        assert!(err("groups: [{name: a}, {name: a}]\nwindows: [{}]").contains("duplicate"));
+        assert!(err("windows: [{group: ' '}]").contains("group is empty"));
     }
 }

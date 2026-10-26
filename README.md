@@ -29,7 +29,7 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 |---|---|---|---|
 | `c` | new window | `\|` | split side by side |
 | `n` / `p` | next / previous window | `-` | split stacked |
-| `1`-`9` | select window | arrows, `Ctrl-h/j/k/l` | move focus |
+| `1`-`9` | window 1-9 of the first group | arrows, `Ctrl-h/j/k/l` | move focus |
 | `,` | rename window | `h j k l` (or `H J K L`) | resize pane by 5 |
 | `&` | kill window | `o` | next pane |
 | `x` | kill pane | `z` | zoom pane |
@@ -42,6 +42,7 @@ The default prefix is **Ctrl-a**. The server exits when its last session ends.
 | `r` | reload config | `R` | respawn pane (asks) |
 | `Alt-r` | respawn window (asks) | `f` or `/` | search windows |
 | `Tab` | previously opened window (then `Tab` / `Shift-Tab` repeat) | `m` | maximize / restore |
+| `C` | new window group (asks) | `<tag>` `<tag>` | window of a group, e.g. `g 1` |
 | `P` | popup shell (toggle) | `D` | show / hide the dock |
 | `{` / `}` | previous / next dock pane | `A` / `X` | add / close a dock pane |
 
@@ -49,6 +50,19 @@ Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
 (see below).
 
 **Maximize**: `<prefix> m` makes the focused thing fill the whole terminal: a window pane, a dock pane, the popup, or the sidebar (when it has focus). The pane is resized to the full screen, so lazygit or vim redraw at full size. Press it again to restore. Moving focus to something else (or hiding the popup or dock) restores it too. Unlike `z`, which zooms inside the pane area, this hides the sidebar and dock as well.
+
+**Window groups**: windows belong to groups, which the sidebar shows under a heading
+(`g code`) once there is more than one. A group has a name and a one-letter *tag*
+(shown in its heading); a window's tag is its place in its group, `1`-`9` and then
+`a`-`z`. `<prefix> <group tag> <window tag>` opens a window, e.g. `Ctrl-a g 1` is the
+first window of the group tagged `g`, and `<prefix> 1`-`9` picks from the first group.
+`<prefix> C` asks for a name and starts a group with a new window (its tag is
+picked from the name's letters, avoiding bound keys). In the focused sidebar `g`
+renames the selected window's group and `t` gives it another tag; a tag that is
+already a prefix binding or another group's is refused. `J`/`K` move a window within
+its group, then into the next or previous group; a group's only window moves the whole
+group. `<prefix> c` adds to the group of the shown window; an emptied group disappears.
+Project files say `group: NAME` on windows and may list `groups:` (see below).
 
 **Recent windows**: `<prefix> Tab` toggles to the previously opened window; for
 the repeat time after it (`options.repeat_time`, 1 second) plain `Tab` goes
@@ -159,8 +173,11 @@ where each pane starts and what it runs. See
 name: app                 # session name (default: the directory's name)
 root: ~/code/app          # default: the directory of the file
 lazy: true                # default: a window starts when first shown
+groups:                   # optional: window groups, in order (tag: one letter, optional)
+  - {name: code, tag: g}  # Ctrl-a g 1 opens the first window of this group
 windows:
   - name: edit
+    group: code           # windows without `group` are in `main`
     focus: true           # shown first
     layout:
       split: columns      # columns = side by side, rows = stacked
@@ -253,7 +270,9 @@ shell) closes it.
 ## Searching windows
 
 `<prefix> f`, or `/` in the focused sidebar, filters the windows by typing
-(fuzzy: `srv` finds `2 server`). `Up`/`Down` (or `Ctrl-n`/`Ctrl-p`) move the
+(fuzzy: `srv` finds `2 server`; with several groups the labels read `g1 server`, and a
+group's name finds its windows). Only windows that are already running are shown while
+you move through the results; `Enter` starts and opens the chosen one. `Up`/`Down` (or `Ctrl-n`/`Ctrl-p`) move the
 selection, which shows that window as you go; `Enter` opens it and `Esc` goes
 back to where you were.
 
@@ -270,7 +289,7 @@ towards it (`<prefix> Left` from the leftmost pane, or a root binding such as
 `"C-h" = "focus-left"`; the opposite direction leaves it). While focused:
 `j`/`k` select (and show) the window or session as the highlight moves
 (`sidebar.follow`, on by default), `Enter` (or `o`) opens it and leaves, `q` leaves, `x` kills (after a y/n confirmation), `r`
-renames, `J`/`K` reorder, `n` creates a window or session, `Tab` toggles the
+renames, `g`/`t` rename / re-tag the window's group, `J`/`K` reorder, `n` creates a window or session, `Tab` toggles the
 list, `q` leaves. All of it is configurable in `[keys.sidebar]`.
 
 Prompts (rename, confirmations, the dock command) are a box in the middle of the screen: type and press Enter, or Esc to cancel; confirmations take `y` and cancel on any other key.
@@ -289,7 +308,7 @@ checked by the test suite to match the built-in defaults.
 - Key notation: `C-a`, `M-h`, `S-Left`, `C-M-x`, `F5`, `PageUp`, `Space`, or a
   single character.
 - Actions: `new-window`, `kill-window`, `next-window`, `prev-window`,
-  `select-window N`, `toggle-maximize`, `recent-window`, `recent-window-reverse`, `rename-window`, `split-vertical`, `split-horizontal`,
+  `select-window N`, `new-group`, `sidebar-rename-group`, `sidebar-group-tag`, `toggle-maximize`, `recent-window`, `recent-window-reverse`, `rename-window`, `split-vertical`, `split-horizontal`,
   `focus-left|right|up|down`, `focus-next`, `resize-left|right|up|down [N]`,
   `kill-pane`, `zoom-pane`, `new-session`, `next-session`, `prev-session`,
   `select-session N`, `rename-session`, `toggle-sidebar`,

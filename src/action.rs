@@ -28,6 +28,10 @@ pub enum SidebarCmd {
     Export,
     /// Filter the windows by typing.
     Search,
+    /// Rename the selected window's group.
+    RenameGroup,
+    /// Give the selected window's group another tag.
+    GroupTag,
 }
 
 /// Movement and editing commands available in copy mode.
@@ -62,9 +66,11 @@ pub enum Action {
     PrevWindow,
     /// Step through windows in the order they were last opened (`true`: further back).
     RecentWindow(bool),
-    /// 1-based, as shown in the sidebar.
+    /// Window n (1-based, its tag for 1-9) of the first group.
     SelectWindow(usize),
     RenameWindow,
+    /// Ask for a name and start a group with a new window in it.
+    NewGroup,
     SplitVertical,
     SplitHorizontal,
     Focus(Dir),
@@ -155,6 +161,7 @@ impl FromStr for Action {
                 if n == 0 { Err("select-window is 1-based".into()) } else { Ok(Action::SelectWindow(n)) }
             }
             "rename-window" => no_arg(Action::RenameWindow),
+            "new-group" => no_arg(Action::NewGroup),
             "split-vertical" => no_arg(Action::SplitVertical),
             "split-horizontal" => no_arg(Action::SplitHorizontal),
             "focus-left" => no_arg(Action::Focus(Dir::Left)),
@@ -220,6 +227,8 @@ impl FromStr for Action {
             "dock-rename" => no_arg(Action::DockRename),
             "sidebar-export" => no_arg(Action::Sidebar(SidebarCmd::Export)),
             "sidebar-search" => no_arg(Action::Sidebar(SidebarCmd::Search)),
+            "sidebar-rename-group" => no_arg(Action::Sidebar(SidebarCmd::RenameGroup)),
+            "sidebar-group-tag" => no_arg(Action::Sidebar(SidebarCmd::GroupTag)),
             "sidebar-respawn" => no_arg(Action::Sidebar(SidebarCmd::Respawn)),
             "sidebar-down" => no_arg(Action::Sidebar(SidebarCmd::Down)),
             "sidebar-up" => no_arg(Action::Sidebar(SidebarCmd::Up)),
@@ -269,6 +278,9 @@ mod tests {
         assert_eq!("sidebar-search".parse(), Ok(Action::Sidebar(SidebarCmd::Search)));
         assert_eq!("sidebar-respawn".parse(), Ok(Action::Sidebar(SidebarCmd::Respawn)));
         assert_eq!("sidebar-move-up".parse(), Ok(Action::Sidebar(SidebarCmd::MoveUp)));
+        assert_eq!("new-group".parse(), Ok(Action::NewGroup));
+        assert_eq!("sidebar-group-tag".parse(), Ok(Action::Sidebar(SidebarCmd::GroupTag)));
+        assert_eq!("sidebar-rename-group".parse(), Ok(Action::Sidebar(SidebarCmd::RenameGroup)));
     }
 
     #[test]

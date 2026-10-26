@@ -4,9 +4,9 @@
 use std::path::{Path, PathBuf};
 
 use super::layout::{Axis, Node, PaneId, Rect};
-use super::state::{ClientId, Dock, DockEntry, PaneSpec, Window};
+use super::state::{ClientId, Dock, DockEntry, Group, PaneSpec, Window, DEFAULT_GROUP};
 use super::Server;
-use crate::project::{self, Plan, PlanAxis, PlanChild, PlanDock, PlanDockPane, PlanNode, PlanWindow, Size};
+use crate::project::{self, Plan, PlanAxis, PlanChild, PlanDock, PlanDockPane, PlanGroup, PlanNode, PlanWindow, Size};
 use crate::protocol::{ServerMsg, Snapshot};
 
 /// A pane to start: id, working directory, command and whether it takes focus.
@@ -59,12 +59,33 @@ impl Server {
         })
     }
 
+    /// The session's groups for a plan: tags from the file where they are free, others chosen.
+    fn plan_groups(&self, plan: &Plan) -> Vec<Group> {
+        let mut groups: Vec<Group> = Vec::new();
+        let named: Vec<(&str, Option<char>)> = match plan.groups.is_empty() {
+            true => vec![(DEFAULT_GROUP, None)],
+            false => plan.groups.iter().map(|g| (g.name.as_str(), g.tag)).collect(),
+        };
+        for (i, (name, tag)) in named.into_iter().enumerate() {
+            let tag = tag
+                .filter(|&t| self.tag_conflict(&groups, t, None).is_none())
+                .unwrap_or_else(|| self.free_tag(&groups, name));
+            groups.push(Group { id: i as u32 + 1, name: name.to_string(), tag });
+        }
+        groups
+    }
+
     fn create_project_session(&mut self, cid: ClientId, plan: &Plan, source: PathBuf) -> Result<u32, String> {
         let size = self.content_size(cid);
+        let groups = self.plan_groups(plan);
         let windows: Vec<Window> = plan
             .windows
             .iter()
             .map(|w| Window {
+                group: groups
+                    .iter()
+                    .find(|g| Some(&g.name) == w.group.as_ref().or(Some(&DEFAULT_GROUP.to_string())))
+                    .map_or(1, |g| g.id),
                 id: self.alloc_window_id(),
                 pinned_name: w.name.clone(),
                 auto_name: self.default_label(&w.tree),
@@ -83,6 +104,7 @@ impl Server {
             id,
             name: plan.name.clone(),
             windows,
+            groups,
             active: plan.focus.min(plan.windows.len().saturating_sub(1)),
             size,
             owner: None,
@@ -343,6 +365,7 @@ impl Server {
             .iter()
             .map(|w| PlanWindow {
                 name: w.pinned_name.clone(),
+                group: s.group_index(w.group).map(|gi| s.groups[gi].name.clone()),
                 lazy: true,
                 tree: match (&w.plan, w.pending) {
                     (Some(plan), true) => plan.clone(),
@@ -350,6 +373,7 @@ impl Server {
                 },
             })
             .collect();
+        let groups = s.groups.iter().map(|g| PlanGroup { name: g.name.clone(), tag: Some(g.tag) }).collect();
         let dock = (!s.dock.entries.is_empty()).then(|| PlanDock {
             width: s.dock.width,
             visible: s.dock.visible,
@@ -371,7 +395,7 @@ impl Server {
                 .collect(),
         });
         Snapshot {
-            plan: Plan { name: s.name.clone(), root, windows, focus: s.active, pane_command: s.pane_command.clone(), dock, sidebar_width: s.sidebar_w, sidebar_visible: None },
+            plan: Plan { name: s.name.clone(), root, groups, windows, focus: s.active, pane_command: s.pane_command.clone(), dock, sidebar_width: s.sidebar_w, sidebar_visible: None },
             source: s.project.clone(),
         }
     }

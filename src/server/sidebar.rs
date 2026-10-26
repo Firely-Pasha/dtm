@@ -13,6 +13,22 @@ pub struct Item {
     pub active: bool,
     /// The keyboard selection while the sidebar has focus.
     pub selected: bool,
+    /// A group's name above its windows, not an item of its own.
+    pub heading: bool,
+}
+
+impl Item {
+    /// A group's title, with its tag at the right edge.
+    pub fn heading(label: String, tag: char) -> Item {
+        Item { label, marks: tag.to_string(), active: false, selected: false, heading: true }
+    }
+}
+
+/// A sidebar line: a group heading (by group index), or a row of `Server::sidebar_rows`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Line {
+    Group(usize),
+    Row(usize),
 }
 
 pub struct Footer {
@@ -23,6 +39,8 @@ pub struct Footer {
 pub struct SidebarView {
     pub header: String,
     pub subheader: String,
+    /// A group's tag, at the right edge of the subheader.
+    pub subtag: Option<char>,
     pub items: Vec<Item>,
     pub footer: Option<Footer>,
     pub focused: bool,
@@ -90,7 +108,12 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
     }
     canvas.put_str(text_x, 0, &format!(" {}", truncate(&view.header, text_w.saturating_sub(1))), BOLD, text_w);
     if rows > 1 {
-        canvas.put_str(text_x, 1, &format!(" {}", truncate(&view.subheader, text_w.saturating_sub(1))), DIM, text_w);
+        let tag_w = view.subtag.map_or(0, |_| 2);
+        let title = truncate(&view.subheader, text_w.saturating_sub(1 + tag_w));
+        canvas.put_str(text_x, 1, &format!(" {title}"), DIM, text_w);
+        if let Some(tag) = view.subtag.filter(|_| text_w > 2) {
+            canvas.put_str(text_x + text_w - 2, 1, &tag.to_string(), DIM, 1);
+        }
     }
     let footer_rows = usize::from(view.footer.is_some());
     let first = FIRST_ITEM_ROW;
@@ -99,6 +122,16 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
     let offset = scroll_offset(active_idx, capacity);
     for (row, item) in view.items.iter().skip(offset).take(capacity).enumerate() {
         let y = first + row;
+        if item.heading {
+            // Drawn like the subheader: dim, the tag at the right edge.
+            canvas.fill(text_x, y, text_w, 1, Cell::BLANK);
+            let label_w = text_w.saturating_sub(item.marks.width() + 2);
+            canvas.put_str(text_x, y, &format!(" {}", truncate(&item.label, label_w)), DIM, text_w);
+            if text_w > 2 {
+                canvas.put_str(text_x + text_w - item.marks.width() - 1, y, &item.marks, DIM, item.marks.width());
+            }
+            continue;
+        }
         let attrs = if item.selected {
             SELECTED
         } else if item.active && view.focused {
@@ -131,11 +164,11 @@ mod tests {
     use super::*;
 
     fn item(label: &str, marks: &str, active: bool) -> Item {
-        Item { label: label.into(), marks: marks.into(), active, selected: false }
+        Item { label: label.into(), marks: marks.into(), active, selected: false, heading: false }
     }
 
     fn view(items: Vec<Item>) -> SidebarView {
-        SidebarView { header: "main".into(), subheader: "windows".into(), items, footer: None, focused: false }
+        SidebarView { header: "main".into(), subheader: "windows".into(), subtag: None, items, footer: None, focused: false }
     }
 
     #[test]
@@ -213,6 +246,19 @@ mod tests {
         assert_eq!(c.cell(1, 3).attrs.bg, Color::Default);
         assert_eq!(c.cell(0, 2).ch, ' ');
         assert_eq!(c.cell(13, 0).attrs.fg, Color::Idx(2));
+    }
+
+    #[test]
+    fn headings_are_dim_with_the_tag_at_the_right_edge() {
+        let mut c = Canvas::new(14, 5);
+        draw(&mut c, 0, 14, Position::Left, &view(vec![Item::heading("code".into(), 'g'), item("1 sh", "", true)]));
+        assert_eq!(c.row_text(2), " code      g │");
+        assert_eq!(c.cell(1, 2).attrs, DIM);
+        assert!(c.cell(1, 3).attrs.has(flags::REVERSE));
+        let mut v = view(vec![]);
+        v.subtag = Some('m');
+        draw(&mut c, 0, 14, Position::Left, &v);
+        assert_eq!(c.row_text(1), " windows   m │");
     }
 
     #[test]

@@ -75,6 +75,18 @@ impl Server {
         if let Key::Mouse(m) = ev.key {
             return self.handle_mouse(cid, m);
         }
+        // After the prefix and a group's tag, the next key is a window tag in that group.
+        if let Some(gid) = c.pending_group.take() {
+            c.message = None;
+            if let Key::Char(ch) = ev.key
+                && ev.mods & !keys::SHIFT == 0
+            {
+                self.open_tagged(cid, gid, ch);
+                self.sidebar_select_shown(cid);
+            }
+            self.mark_dirty();
+            return;
+        }
         if c.search.is_some() {
             return self.search_key(cid, ev);
         }
@@ -82,6 +94,14 @@ impl Server {
             self.mark_dirty();
             if let Some(action) = self.cfg.prefix_keys.get(&ev.combo()).cloned() {
                 self.run_action(cid, action, Trigger { key: ev.raw.clone(), prefix: Some(prefix_raw) });
+            } else if let (Key::Char(ch), 0) = ev.combo()
+                && let Some(gid) = self.group_tagged(cid, ch)
+            {
+                let name = self.group_name(cid, gid);
+                self.message(cid, format!("group {name}: window?"));
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.pending_group = Some(gid);
+                }
             }
             return;
         }

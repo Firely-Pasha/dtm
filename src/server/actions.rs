@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 
 use super::copy::{base64, CopyMode, Outcome};
 use super::layout::{neighbor, Axis, Node, PaneId, Rect};
-use super::state::{ClientId, Cycle, Dock, Extra, Pane, PaneSpec, Prompt, PromptKind, Session, SessionId, Window, WindowId};
+use super::state::{
+    ClientId, Cycle, Dock, Extra, Group, GroupId, Pane, PaneSpec, Prompt, PromptKind, Session, SessionId, Window, WindowId,
+    DEFAULT_GROUP,
+};
 use super::{Event, Server};
 use crate::action::{Action, CopyCmd, Dir, SidebarCmd};
 use crate::config::{Position, SidebarMode};
@@ -55,7 +58,7 @@ impl Server {
         Ok(())
     }
 
-    fn make_window(&mut self, cwd: Option<PathBuf>, size: (u16, u16)) -> Result<Window, String> {
+    pub(super) fn make_window(&mut self, cwd: Option<PathBuf>, size: (u16, u16), group: GroupId) -> Result<Window, String> {
         let pane = self.alloc_pane_id();
         self.spawn_pane(pane, cwd, size)?;
         Ok(Window {
@@ -70,6 +73,7 @@ impl Server {
             bell: false,
             plan: None,
             pending: false,
+            group,
         })
     }
 
@@ -84,12 +88,14 @@ impl Server {
             Some(n) => n,
             None => (0..).map(|i| i.to_string()).find(|n| !self.sessions.iter().any(|s| &s.name == n)).unwrap(),
         };
-        let window = self.make_window(cwd.clone(), size)?;
+        let tag = self.free_tag(&[], DEFAULT_GROUP);
+        let window = self.make_window(cwd.clone(), size, 1)?;
         let id = self.alloc_session_id();
         self.sessions.push(Session {
             id,
             name,
             windows: vec![window],
+            groups: vec![Group { id: 1, name: DEFAULT_GROUP.into(), tag }],
             active: 0,
             size,
             owner: None,
@@ -123,13 +129,14 @@ impl Server {
 
     pub fn new_window(&mut self, sid: SessionId) -> Result<(), String> {
         let cwd = self.active_cwd(sid);
-        let size = self.sessions.iter().find(|s| s.id == sid).map(|s| s.size).ok_or("no session")?;
-        let window = self.make_window(cwd, size)?;
-        self.setup_pane(sid, window.active, None);
         let si = self.session_index(sid).ok_or("no session")?;
+        let s = &self.sessions[si];
+        // The new window goes at the end of the shown window's group.
+        let (size, group, wi) = (s.size, s.active_window().group, s.group_windows(s.group_of(s.active)).end);
+        let window = self.make_window(cwd, size, group)?;
+        self.setup_pane(sid, window.active, None);
         let s = &mut self.sessions[si];
-        s.windows.push(window);
-        let wi = s.windows.len() - 1;
+        s.windows.insert(wi, window);
         self.refresh_name(si, wi);
         self.open_window(sid, wi);
         Ok(())
@@ -336,6 +343,7 @@ impl Server {
             w.bell = false;
         }
         s.active = s.active.min(s.windows.len() - 1);
+        s.normalize_groups();
     }
 
     pub fn locate_pane(&self, pane: PaneId) -> Option<(usize, usize)> {
@@ -378,6 +386,10 @@ impl Server {
     pub fn run_action(&mut self, cid: ClientId, action: Action, trigger: Trigger) {
         let Some(sid) = self.clients.get(&cid).and_then(|c| c.session) else { return };
         let Some(si) = self.session_index(sid) else { return };
+        let follows = matches!(
+            action,
+            Action::SelectWindow(_) | Action::NextWindow | Action::PrevWindow | Action::RecentWindow(_)
+        );
         let result: Result<(), String> = match action {
             Action::NewWindow => self.new_window(sid),
             Action::KillWindow => {
@@ -394,7 +406,9 @@ impl Server {
                 Ok(())
             },
             Action::SelectWindow(n) => {
-                self.open_window(sid, n - 1);
+                if n <= self.sessions[si].group_windows(0).len() {
+                    self.open_window(sid, n - 1);
+                }
                 Ok(())
             },
             Action::ToggleMaximize => {
@@ -426,6 +440,10 @@ impl Server {
                 let w = self.sessions[si].active_window();
                 let (id, text) = (w.id, w.name().to_string());
                 self.set_prompt(cid, PromptKind::RenameWindow(id), text, "rename window");
+                Ok(())
+            }
+            Action::NewGroup => {
+                self.set_prompt(cid, PromptKind::NewGroup(sid), String::new(), "new group");
                 Ok(())
             }
             Action::RenameSession => {
@@ -607,7 +625,23 @@ impl Server {
         if let Err(e) = result {
             self.message(cid, e);
         }
+        if follows {
+            self.sidebar_select_shown(cid);
+        }
         self.mark_dirty();
+    }
+
+    /// A focused sidebar's selection moves to the window now shown.
+    pub(super) fn sidebar_select_shown(&mut self, cid: ClientId) {
+        let Some(c) = self.clients.get(&cid) else { return };
+        if c.sidebar_focus.is_none() || c.sidebar_mode != SidebarMode::Windows || c.search.is_some() {
+            return;
+        }
+        let Some(s) = c.session.and_then(|sid| self.sessions.iter().find(|s| s.id == sid)) else { return };
+        let row = self.sidebar_rows(c, s).iter().position(|&i| i == s.active);
+        if let Some(c) = self.clients.get_mut(&cid) {
+            c.sidebar_focus = row.or(c.sidebar_focus);
+        }
     }
 
     fn copy_command(&mut self, cid: ClientId, si: usize, cmd: CopyCmd) {
@@ -871,6 +905,17 @@ impl Server {
                     s.name = text;
                 }
             }
+            PromptKind::NewGroup(sid) => {
+                if let Err(e) = self.new_group(cid, sid, &text) {
+                    self.message(cid, e);
+                }
+            }
+            PromptKind::RenameGroup(sid, gid) => self.rename_group(sid, gid, text),
+            PromptKind::GroupTag(sid, gid) => {
+                if let Err(e) = self.set_group_tag(sid, gid, &text) {
+                    self.message(cid, e);
+                }
+            }
             PromptKind::ConfirmKillWindow(id) => {
                 let found = self.sessions.iter().find_map(|s| {
                     s.windows.iter().position(|w| w.id == id).map(|wi| (s.id, wi))
@@ -946,19 +991,6 @@ impl Server {
         }
     }
 
-    fn move_window(&mut self, sid: SessionId, from: usize, to: usize) {
-        let Some(s) = self.sessions.iter_mut().find(|s| s.id == sid) else { return };
-        if from >= s.windows.len() || to >= s.windows.len() {
-            return;
-        }
-        s.windows.swap(from, to);
-        if s.active == from {
-            s.active = to;
-        } else if s.active == to {
-            s.active = from;
-        }
-    }
-
     // ---- sidebar focus ----
 
     fn set_sidebar_focus(&mut self, cid: ClientId, sel: Option<usize>) {
@@ -1026,8 +1058,10 @@ impl Server {
             }
             SidebarCmd::Kill => match mode {
                 SidebarMode::Windows => {
-                    let w = &self.sessions[si].windows[sel];
-                    let (id, label) = (w.id, format!("kill window {} ({})? (y/n)", sel + 1, w.name()));
+                    let s = &self.sessions[si];
+                    let tag = s.window_tag(sel).unwrap_or(' ');
+                    let w = &s.windows[sel];
+                    let (id, label) = (w.id, format!("kill window {tag} ({})? (y/n)", w.name()));
                     self.set_prompt(cid, PromptKind::ConfirmKillWindow(id), String::new(), label);
                 }
                 SidebarMode::Sessions => {
@@ -1038,8 +1072,10 @@ impl Server {
             },
             SidebarCmd::Respawn => match mode {
                 SidebarMode::Windows => {
-                    let w = &self.sessions[si].windows[sel];
-                    let (id, label) = (w.id, format!("respawn window {} ({})? (y/n)", sel + 1, w.name()));
+                    let s = &self.sessions[si];
+                    let tag = s.window_tag(sel).unwrap_or(' ');
+                    let w = &s.windows[sel];
+                    let (id, label) = (w.id, format!("respawn window {tag} ({})? (y/n)", w.name()));
                     self.set_prompt(cid, PromptKind::ConfirmRespawnWindow(id), String::new(), label);
                 }
                 SidebarMode::Sessions => return Err("respawn works on windows".into()),
@@ -1049,6 +1085,20 @@ impl Server {
                     return Err("search works on windows".into());
                 }
                 return self.start_search(cid);
+            }
+            SidebarCmd::RenameGroup | SidebarCmd::GroupTag => {
+                if mode == SidebarMode::Sessions {
+                    return Err("groups hold windows".into());
+                }
+                let s = &self.sessions[si];
+                let g = &s.groups[s.group_of(sel)];
+                if cmd == SidebarCmd::RenameGroup {
+                    let (id, text) = (g.id, g.name.clone());
+                    self.set_prompt(cid, PromptKind::RenameGroup(sid, id), text, "rename group");
+                } else {
+                    let (id, label) = (g.id, format!("tag for group {} (now {})", g.name, g.tag));
+                    self.set_prompt(cid, PromptKind::GroupTag(sid, id), String::new(), label);
+                }
             }
             SidebarCmd::Export => {
                 let target = if mode == SidebarMode::Sessions { sel } else { si };
@@ -1070,12 +1120,15 @@ impl Server {
                 }
             },
             SidebarCmd::MoveDown | SidebarCmd::MoveUp => {
-                let to = if cmd == SidebarCmd::MoveDown { sel + 1 } else { sel.wrapping_sub(1) };
-                if to < count {
-                    match mode {
-                        SidebarMode::Windows => self.move_window(sid, sel, to),
-                        SidebarMode::Sessions => self.sessions.swap(sel, to),
+                let down = cmd == SidebarCmd::MoveDown;
+                let to = match mode {
+                    SidebarMode::Windows => self.move_window(sid, sel, down),
+                    SidebarMode::Sessions => {
+                        let to = if down { sel + 1 } else { sel.wrapping_sub(1) };
+                        (to < count).then(|| self.sessions.swap(sel, to)).map(|_| to)
                     }
+                };
+                if let Some(to) = to {
                     self.set_sidebar_focus(cid, Some(to));
                     if self.cfg.sidebar.follow {
                         self.show_sidebar_item(cid, sid, mode, to, false);

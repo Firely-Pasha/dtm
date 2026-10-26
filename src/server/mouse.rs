@@ -3,7 +3,7 @@
 
 use super::copy::CopyMode;
 use super::layout::PaneId;
-use super::sidebar;
+use super::sidebar::{self, Line};
 use super::state::ClientId;
 use super::Server;
 use crate::config::{Position, SidebarMode};
@@ -192,13 +192,24 @@ impl Server {
         let Some(c) = self.clients.get(&cid) else { return };
         let s = &self.sessions[si];
         let rows = self.sidebar_rows(c, s);
-        let active = match c.sidebar_mode {
+        let lines = self.sidebar_lines(c, s);
+        let active_row = match c.sidebar_mode {
             SidebarMode::Windows => rows.iter().position(|&i| i == s.active).unwrap_or(0),
             SidebarMode::Sessions => si,
         };
+        let active = lines.iter().position(|&l| l == Line::Row(active_row)).unwrap_or(0);
         let has_footer = self.footer_visible(c);
-        let Some(row) = sidebar::item_at(rows.len(), active, c.rows as usize, has_footer, m.y as usize) else { return };
-        let (idx, mode) = (rows[row], c.sidebar_mode);
+        let Some(at) = sidebar::item_at(lines.len(), active, c.rows as usize, has_footer, m.y as usize) else { return };
+        let mode = c.sidebar_mode;
+        let row = match lines[at] {
+            Line::Row(row) => row,
+            // A group's heading opens its first window.
+            Line::Group(gi) => {
+                let first = s.group_windows(gi).start;
+                rows.iter().position(|&i| i == first).unwrap_or(0)
+            }
+        };
+        let idx = rows[row];
         if let Some(c) = self.clients.get_mut(&cid)
             && c.sidebar_focus.is_some() {
                 c.sidebar_focus = Some(row);
