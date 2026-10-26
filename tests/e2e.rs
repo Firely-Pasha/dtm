@@ -1526,6 +1526,23 @@ async fn cursor_shape_requests_reach_the_terminal() {
 }
 
 #[tokio::test]
+async fn copy_mode_always_shows_a_block_cursor() {
+    let env = Env::new("copy-cursor", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("printf '\\033[6 q'; echo SYNC$((1+1))\r");
+    h.wait_text("SYNC2").await;
+    assert_eq!(h.screen.modes().cursor_style, 6, "the shell asked for a bar");
+    h.send(&format!("{CTRL_A}["));
+    h.wait_screen("block cursor in copy mode", |s| s.modes().cursor_style == 2).await;
+    // also while selecting
+    h.send("vk");
+    h.wait_screen("still a block", |s| s.modes().cursor_style == 2).await;
+    h.send("q");
+    h.wait_screen("the program's own shape again", |s| s.modes().cursor_style == 6).await;
+}
+
+#[tokio::test]
 async fn export_saves_the_directory_a_pane_changed_to() {
     let env = Env::new("export-cwd", "");
     let proj = env.dir.join("proj");

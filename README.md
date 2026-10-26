@@ -110,7 +110,8 @@ and `N` the other way; matches are highlighted and the current one stands out
 (`[theme] match_bg`). `v` selects, `V` selects whole lines, `Ctrl-v` a rectangle; `y`
 copies: the selection ends but you stay in copy mode with the cursor where it was (so you can
 select and copy again), and `q` leaves. Copied text is kept in dtm's paste buffer and also sent
-to the terminal clipboard (OSC 52).
+to the terminal clipboard (OSC 52). The cursor is a steady block while you are in copy mode,
+whatever shape the program in the pane asked for.
 
 **Mouse**: click a sidebar entry (or a group's title) to switch window or session,
 click a pane or a dock tab to focus it, scroll the wheel to enter copy mode (or scroll full-screen apps).

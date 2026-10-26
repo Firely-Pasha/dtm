@@ -877,7 +877,7 @@ impl Server {
             let m = p.screen.modes();
             canvas.app_cursor = m.app_cursor;
             canvas.bracketed_paste = m.bracketed_paste;
-            canvas.cursor_style = m.cursor_style;
+            canvas.cursor_style = p.cursor_style();
         }
         let view = self.sidebar_view(c, s);
         if sw > 0 {
@@ -942,7 +942,7 @@ impl Server {
         let m = pane.screen.modes();
         canvas.app_cursor = m.app_cursor;
         canvas.bracketed_paste = m.bracketed_paste;
-        canvas.cursor_style = m.cursor_style;
+        canvas.cursor_style = pane.cursor_style();
         canvas.mouse = self.cfg.mouse;
         if let Some((text, _)) = &c.message {
             let attrs = self.cfg.theme.muted();

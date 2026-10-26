@@ -125,7 +125,7 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
         let m = pane.screen.modes();
         canvas.app_cursor = m.app_cursor;
         canvas.bracketed_paste = m.bracketed_paste;
-        canvas.cursor_style = m.cursor_style;
+        canvas.cursor_style = pane.cursor_style();
         if !focused {
             canvas.cursor = None;
         } else if let Some(copy) = &pane.copy {
@@ -613,6 +613,24 @@ mod tests {
         assert!(c.cell(0, 0).attrs.has(flags::REVERSE) && c.cell(1, 0).attrs.has(flags::REVERSE));
         assert!(!c.cell(2, 0).attrs.has(flags::REVERSE));
         assert_eq!(c.cursor, Some((1, 0)));
+    }
+
+    #[tokio::test]
+    async fn copy_mode_shows_a_steady_block_cursor_whatever_the_program_asked_for() {
+        let w = window(Node::Leaf(1), 1);
+        let mut p = pane(1, 8, 2, "").await;
+        p.screen.feed(b"\x1b[6 qabc"); // the program wants a bar
+        assert_eq!(p.cursor_style(), 6);
+        let mut panes = HashMap::new();
+        panes.insert(1, p);
+        assert_eq!(render_window(&w, &panes, (8, 2), opts(false)).cursor_style, 6);
+        let p = panes.get_mut(&1).unwrap();
+        p.copy = Some(CopyMode::new(&p.screen));
+        assert_eq!(p.cursor_style(), 2);
+        assert_eq!(render_window(&w, &panes, (8, 2), opts(false)).cursor_style, 2, "a steady block");
+        let p = panes.get_mut(&1).unwrap();
+        p.copy = None;
+        assert_eq!(render_window(&w, &panes, (8, 2), opts(false)).cursor_style, 6, "and back again");
     }
 
     #[test]

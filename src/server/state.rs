@@ -62,6 +62,11 @@ pub struct Pane {
 }
 
 impl Pane {
+    /// The cursor shape (DECSCUSR) to show: the program's own, but a steady block in copy mode.
+    pub fn cursor_style(&self) -> u8 {
+        if self.copy.is_some() { 2 } else { self.screen.modes().cursor_style }
+    }
+
     pub fn resize(&mut self, cols: u16, rows: u16) {
         let (cols, rows) = (cols.max(1), rows.max(1));
         if self.screen.cols() != cols as usize || self.screen.rows() != rows as usize {
