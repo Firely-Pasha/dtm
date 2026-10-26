@@ -142,7 +142,22 @@ impl Server {
             }
             return;
         }
+        // A window that has not started has no pane to type into: `o` or Enter loads it.
+        if let Some(sid) = self.unloaded_window(cid) {
+            if matches!((ev.key, ev.mods), (Key::Enter, 0) | (Key::Char('o'), 0)) {
+                self.focus_shown(sid);
+                self.mark_dirty();
+            }
+            return;
+        }
         self.forward(cid, ev.raw);
+    }
+
+    /// The client's session, when the window it shows has not started and has the keyboard.
+    fn unloaded_window(&self, cid: ClientId) -> Option<super::state::SessionId> {
+        let sid = self.clients.get(&cid)?.session;
+        let s = self.sessions.iter().find(|s| Some(s.id) == sid)?;
+        (s.active_window().pending && self.focused_pane_in(s).is_none()).then_some(s.id)
     }
 
     fn active_pane_in_copy_mode(&self, cid: ClientId) -> bool {

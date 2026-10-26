@@ -674,15 +674,14 @@ impl Server {
     pub fn sidebar_rows(&self, c: &Client, s: &Session) -> Vec<usize> {
         match (c.sidebar_mode, &c.search) {
             (SidebarMode::Windows, Some(q)) => {
-                let grouped = s.groups.len() > 1;
                 // Typing a group's name finds its windows too.
                 let labels: Vec<String> = (0..s.windows.len())
-                    .map(|i| match grouped {
-                        true => format!("{} {}", Self::window_label(s, i, true), s.groups[s.group_of(i)].name),
-                        false => Self::window_label(s, i, false),
-                    })
+                    .map(|i| format!("{} {}", Self::window_label(s, i, true), s.groups[s.group_of(i)].name))
                     .collect();
-                fuzzy::rank(&q.query, labels.iter().map(String::as_str))
+                let mut rows = fuzzy::rank(&q.query, labels.iter().map(String::as_str));
+                // Results are listed group by group, best match first within each.
+                rows.sort_by_key(|&i| s.group_of(i));
+                rows
             }
             (SidebarMode::Windows, None) => (0..s.windows.len()).collect(),
             (SidebarMode::Sessions, _) => (0..self.sessions.len()).collect(),
@@ -690,15 +689,20 @@ impl Server {
     }
 
     /// What each sidebar line shows: the rows of `sidebar_rows`, with a heading before each
-    /// group's windows when there are several groups (and no search).
+    /// group's windows (and an empty line between groups) when there are several groups.
     pub fn sidebar_lines(&self, c: &Client, s: &Session) -> Vec<Line> {
         let rows = self.sidebar_rows(c, s);
-        let headings = c.sidebar_mode == SidebarMode::Windows && c.search.is_none() && s.groups.len() > 1;
-        let mut lines = Vec::with_capacity(rows.len() + s.groups.len());
+        let headings = c.sidebar_mode == SidebarMode::Windows && s.groups.len() > 1;
+        let mut lines = Vec::with_capacity(rows.len() + 2 * s.groups.len());
+        let mut last = None;
         for (row, &i) in rows.iter().enumerate() {
-            if headings && s.group_windows(s.group_of(i)).start == i {
+            if headings && last != Some(s.group_of(i)) {
+                if last.is_some() {
+                    lines.push(Line::Gap);
+                }
                 lines.push(Line::Group(s.group_of(i)));
             }
+            last = Some(s.group_of(i));
             lines.push(Line::Row(row));
         }
         lines
@@ -709,7 +713,6 @@ impl Server {
         let (header, subheader, items) = match c.sidebar_mode {
             SidebarMode::Windows => {
                 let rows = self.sidebar_rows(c, s);
-                let grouped = c.search.is_some() && s.groups.len() > 1;
                 let mut items: Vec<Item> = self
                     .sidebar_lines(c, s)
                     .into_iter()
@@ -720,6 +723,7 @@ impl Server {
                                 let g = &s.groups[gi];
                                 return Item::heading(g.name.clone(), g.tag);
                             }
+                            Line::Gap => return Item::gap(),
                         };
                         let i = rows[row];
                         let w = &s.windows[i];
@@ -736,7 +740,7 @@ impl Server {
                         if w.pending {
                             marks.push('…');
                         }
-                        let label = Self::window_label(s, i, grouped);
+                        let label = Self::window_label(s, i, false);
                         Item { label, marks, active: i == s.active, selected: c.sidebar_focus == Some(row), heading: false }
                     })
                     .collect();

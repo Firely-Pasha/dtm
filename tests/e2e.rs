@@ -1726,7 +1726,7 @@ async fn groups_tag_windows_and_open_them_by_tags() {
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
     h.wait_text("EDIT1").await;
     // A group's windows sit together under its heading, tagged by their place in it.
-    assert_eq!(sidebar_lines(&h, 5), ["code g", "1 edit", "2 test", "ops u", "1 logs"], "{}", h.text());
+    assert_eq!(sidebar_lines(&h, 6), ["code g", "1 edit", "2 test", "", "ops u", "1 logs"], "{}", h.text());
 
     h.send(&format!("{CTRL_A}u1"));
     h.wait_for("logs", |t| t.contains("LOGS1") && !t.contains("EDIT1")).await;
@@ -1776,9 +1776,9 @@ async fn new_group_rename_and_moving_windows_between_groups() {
     h.wait_text("new group").await;
     h.send("ops\r");
     h.wait_for("second group", |t| t.contains(" ops") && t.contains("main")).await;
-    let lines = sidebar_lines(&h, 5);
+    let lines = sidebar_lines(&h, 6);
     assert!(lines[0].starts_with("main ") && lines[1] == "1 sh" && lines[2] == "2 sh", "{lines:?}");
-    assert!(lines[3].starts_with("ops ") && lines[4] == "1 sh", "{lines:?}");
+    assert!(lines[3].is_empty() && lines[4].starts_with("ops ") && lines[5] == "1 sh", "{lines:?}");
 
     // Rename the group of the selected window.
     h.send(&format!("{CTRL_A}w"));
@@ -1790,10 +1790,10 @@ async fn new_group_rename_and_moving_windows_between_groups() {
 
     // Moving main's last window down puts it into the next group.
     h.send("kJ");
-    h.wait_for("joined", |t| t.lines().nth(6).is_some_and(|l| l.contains("2 sh"))).await;
-    let lines = sidebar_lines(&h, 5);
-    assert!(lines[0].starts_with("main ") && lines[1] == "1 sh", "{lines:?}");
-    assert!(lines[2].starts_with("jobs ") && lines[3] == "1 sh" && lines[4] == "2 sh", "{lines:?}");
+    h.wait_for("joined", |t| t.lines().nth(7).is_some_and(|l| l.contains("2 sh"))).await;
+    let lines = sidebar_lines(&h, 6);
+    assert!(lines[0].starts_with("main ") && lines[1] == "1 sh" && lines[2].is_empty(), "{lines:?}");
+    assert!(lines[3].starts_with("jobs ") && lines[4] == "1 sh" && lines[5] == "2 sh", "{lines:?}");
 
     // Moving the only window of a group takes the whole group along.
     h.send("kJ");
@@ -1840,4 +1840,52 @@ async fn hovering_a_window_in_the_sidebar_does_not_start_it() {
     h.send("jj");
     h.send("\r");
     h.wait_text("TWO2").await;
+}
+
+#[tokio::test]
+async fn search_lists_results_group_by_group() {
+    let env = Env::new("search-groups", "[sidebar]\nwidth = 40\n");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: sg\ngroups:\n  - {name: code, tag: g}\n  - {name: ops, tag: u}\nwindows:\n  - {name: serve-a, group: code, lazy: false}\n  - {name: other, group: code}\n  - {name: serve-b, group: ops}\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("serve-a").await;
+    h.send(&format!("{CTRL_A}f"));
+    h.send("serve");
+    h.wait_for("filtered", |t| t.contains("serve-b") && !t.contains("other")).await;
+    let lines = sidebar_lines(&h, 5);
+    assert_eq!(lines, ["code g", "1 serve-a", "", "ops u", "1 serve-b"], "{lines:?}");
+}
+
+#[tokio::test]
+async fn an_unloaded_window_is_loaded_with_o_or_enter() {
+    let env = Env::new("load-keys", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: ld\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n  - name: three\n    command: echo THREE$((1+2))\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("ONE1").await;
+    // Hover window two, then leave the sidebar for its (empty) pane area.
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("j");
+    h.wait_text("press o or Enter to load").await;
+    h.send("\x0c");
+    h.wait_for("left the sidebar", |t| !t.contains(SIDEBAR_HINT)).await;
+    h.send("x");
+    h.send("o");
+    h.wait_text("TWO2").await;
+
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("j");
+    h.wait_text("Not loaded").await;
+    h.send("\x0c");
+    h.wait_for("left the sidebar", |t| !t.contains(SIDEBAR_HINT)).await;
+    h.send("\r");
+    h.wait_text("THREE3").await;
 }

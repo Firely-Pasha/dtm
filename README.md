@@ -205,7 +205,8 @@ windows:
 - **Lazy start.** Only the first window is created when the project opens; the
   others get their panes and run their commands the first time you open them
   (a `…` marks them in the sidebar; just moving the selection over one shows
-  "Not loaded" and starts nothing). Set `lazy: false` on the file or on a
+  "Not loaded" and starts nothing; with focus on such a window, `o` or `Enter` loads
+  it). Set `lazy: false` on the file or on a
   window to start it at once.
 - **Opening.** `dtm` in a directory with a `project.dtm.yaml` opens it.
   `dtm open [FILE|DIR|NAME]` takes a file, a directory holding one, or a saved
@@ -292,9 +293,11 @@ Every session starts with one group, `main`.
   its group moves the whole group instead, which is how groups are reordered.
 - **In the sidebar.** With one group its name is the title under the session name,
   with its tag at the right edge. With several, each group has such a title row
-  above its windows; clicking a title opens the group's first window.
-- **Search.** `<prefix> f` finds windows across groups: labels read `g1 server`
-  (group tag, window tag, name) and a group's name matches its windows too.
+  above its windows, with an empty line between groups; clicking a title opens
+  the group's first window.
+- **Search.** `<prefix> f` finds windows across groups. Results are listed group by
+  group under the group's title (best match first within each group), and a group's
+  name matches its windows too.
 - **Projects.** A window says `group: NAME`; a top-level `groups:` list sets the
   order and, optionally, the tags (a tag that is already bound is replaced by a free
   one). Windows without `group` are in `main`. Exporting writes both back, but
@@ -316,8 +319,8 @@ Actions (bindable in `[keys.prefix]` and `[keys.sidebar]`): `new-group`,
 ## Searching windows
 
 `<prefix> f`, or `/` in the focused sidebar, filters the windows by typing
-(fuzzy: `srv` finds `2 server`; with several groups the labels read `g1 server`, and a
-group's name finds its windows). A project window that has not
+(fuzzy: `srv` finds `2 server`; with several groups the results are listed group by
+group, and a group's name finds its windows). A project window that has not
 started shows "Not loaded" while you move through the results; `Enter` starts and opens it. `Up`/`Down` (or `Ctrl-n`/`Ctrl-p`) move the
 selection, which shows that window as you go; `Enter` opens it and `Esc` goes
 back to where you were.

@@ -22,12 +22,19 @@ impl Item {
     pub fn heading(label: String, tag: char) -> Item {
         Item { label, marks: tag.to_string(), active: false, selected: false, heading: true }
     }
+
+    /// An empty line between groups.
+    pub fn gap() -> Item {
+        Item { label: String::new(), marks: String::new(), active: false, selected: false, heading: true }
+    }
 }
 
-/// A sidebar line: a group heading (by group index), or a row of `Server::sidebar_rows`.
+/// A sidebar line: a group heading (by group index), a gap between groups, or a row of
+/// `Server::sidebar_rows`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Line {
     Group(usize),
+    Gap,
     Row(usize),
 }
 

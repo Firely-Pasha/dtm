@@ -43,6 +43,8 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
         let text = "Not loaded";
         let attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
         canvas.put_str(cols.saturating_sub(text.len()) / 2, rows / 2, text, attrs, cols);
+        let hint = "press o or Enter to load";
+        canvas.put_str(cols.saturating_sub(hint.len()) / 2, rows / 2 + 1, hint, attrs, cols);
         return canvas;
     }
     let rects = window.rects(size);

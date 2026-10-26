@@ -203,11 +203,9 @@ impl Server {
         let mode = c.sidebar_mode;
         let row = match lines[at] {
             Line::Row(row) => row,
-            // A group's heading opens its first window.
-            Line::Group(gi) => {
-                let first = s.group_windows(gi).start;
-                rows.iter().position(|&i| i == first).unwrap_or(0)
-            }
+            Line::Gap => return,
+            // A group's heading opens its first listed window.
+            Line::Group(gi) => rows.iter().position(|&i| s.group_of(i) == gi).unwrap_or(0),
         };
         let idx = rows[row];
         if let Some(c) = self.clients.get_mut(&cid)
