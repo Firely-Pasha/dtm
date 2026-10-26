@@ -12,8 +12,8 @@ screen model, the frame differ and the layout engine. There is no `vt100`,
 - **[Projects](#projects)**: describe a session's windows, splits and start commands in
   YAML, open it with `dtm open`, export a running session back to a file.
 - **A [dock](#the-dock)** for session-wide panes (lazygit, a log tail) and a **[popup](#popup)** shell.
-- Maximize, zoom, copy mode, mouse support, recently-used window cycling, and an optional
-  rounded-box ["islands" style](#islands-style).
+- Maximize, zoom, copy mode, mouse support, recently-used window cycling, and a
+  rounded-box ["islands" look](#islands-style) (with a `plain` alternative).
 - Seamless `Ctrl-h/j/k/l` movement between panes and [Neovim](#neovim-plugin) splits.
 - Works on Linux and macOS.
 
@@ -319,11 +319,10 @@ Actions (bindable in `[keys.prefix]` and `[keys.sidebar]`): `new-group`,
 
 ## Islands style
 
-`[options] style = "islands"` draws the sidebar, every pane and the dock as separate
-rounded boxes, with a one-cell gap between boxes side by side and none between stacked
-ones; the focused pane's box (and a focused
-sidebar or dock) has a highlighted border. The default is `"classic"`: flat panes
-split by single lines.
+By default (`[options] style = "islands"`) the sidebar, every pane and the dock are
+separate rounded boxes, with a one-cell gap between boxes side by side and none between
+stacked ones; the focused pane's box (and a focused sidebar or dock) has a highlighted
+border. `style = "plain"` gives flat panes split by single lines instead.
 
 ```
 ╭ work ──────────────╮ ╭────────────────────╮ ╭────────╮
@@ -335,7 +334,7 @@ split by single lines.
 ```
 
 A box takes one row and column on each side, so a pane (or the sidebar and dock)
-has two fewer columns and rows of text than in the classic style, and `stty size`
+has two fewer columns and rows of text than in the plain style, and `stty size`
 in a pane reports that smaller size. `Ctrl-a m` still makes a pane fill the whole
 terminal without a box, and `dtm reload` switches styles in a running server.
 
@@ -377,7 +376,7 @@ checked by the test suite to match the built-in defaults.
   `/bin/sh`). The other `[options]`: `prefix` (default `C-a`), `history_limit`
   (scrollback lines per pane, 10000), `mouse`, `clipboard` (copy also goes to the
   terminal clipboard), `repeat_time` (ms, 1000), `navigator_apps`,
-  `window_focus` (`"top-left"` or `"last"`) and `style` (`"classic"` or `"islands"`).
+  `window_focus` (`"top-left"` or `"last"`) and `style` (`"islands"`, the default, or `"plain"`).
 - `[sidebar]` sets `position` (`left`/`right`), `width`, `visible`, `default_mode`
   (`windows`/`sessions`) and `follow`; `[popup]` sets `width` and `height`.
 - `[keys.prefix]`, `[keys.root]`, `[keys.copy]`, `[keys.resize]` and

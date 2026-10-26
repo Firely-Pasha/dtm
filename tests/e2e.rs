@@ -9,6 +9,21 @@ use common::Harness;
 
 const CTRL_A: &str = "\x01";
 
+/// Most tests were written for the plain style (islands is the default), so a config
+/// that does not choose a style gets `style = "plain"`.
+fn with_plain_style(config: &str) -> String {
+    if config.contains("style =") {
+        return config.to_string();
+    }
+    match config.find("[options]\n") {
+        Some(at) => {
+            let end = at + "[options]\n".len();
+            format!("{}style = \"plain\"\n{}", &config[..end], &config[end..])
+        }
+        None => format!("[options]\nstyle = \"plain\"\n{config}"),
+    }
+}
+
 struct Env {
     dir: PathBuf,
     sock: PathBuf,
@@ -21,7 +36,7 @@ impl Env {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let env = Env { sock: dir.join("s.sock"), config: dir.join("config.toml"), dir };
-        std::fs::write(&env.config, config).unwrap();
+        std::fs::write(&env.config, with_plain_style(config)).unwrap();
         env
     }
 
@@ -145,7 +160,7 @@ async fn sidebar_on_the_right_and_reload() {
     assert_eq!(h.screen.cell(80, 5).ch, '│');
     assert_ne!(h.screen.cell(20, 5).ch, '│');
 
-    std::fs::write(&env.config, "[sidebar]\nposition = \"left\"\nwidth = 20\n").unwrap();
+    std::fs::write(&env.config, with_plain_style("[sidebar]\nposition = \"left\"\nwidth = 20\n")).unwrap();
     let (ok, out) = env.run(&["reload"]);
     assert!(ok, "{out}");
     h.wait_cell(19, 5, '│').await;
@@ -1916,11 +1931,11 @@ async fn islands_style_boxes_the_sidebar_and_panes_and_follows_reload() {
     h.send("\x1b[<0;4;3M\x1b[<0;4;3m");
     h.wait_for("back on window 1", |t| t.contains("left2")).await;
 
-    // back to classic
-    std::fs::write(&env.config, "[options]\nstyle = \"classic\"\n").unwrap();
+    // back to plain
+    std::fs::write(&env.config, "[options]\nstyle = \"plain\"\n").unwrap();
     let (ok, out) = env.run(&["reload"]);
     assert!(ok, "{out}");
-    h.wait_for("classic", |t| !t.contains('╭')).await;
+    h.wait_for("plain", |t| !t.contains('╭')).await;
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
@@ -1998,4 +2013,15 @@ async fn islands_panes_shrink_to_one_text_row_or_column_and_keep_their_borders()
     h.wait_screen("right box at its minimum", |s| s.cell(97, 0).ch == '╭').await;
     let row: String = (97..100).map(|x| h.screen.cell(x, 0).ch).collect();
     assert_eq!(row, "╭─╮", "{}", h.text());
+}
+
+#[tokio::test]
+async fn islands_is_the_default_style() {
+    // The comment keeps `with_plain_style` from adding a style, so this is the real default.
+    let env = Env::new("default-style", "# no style set, style = default\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.wait_for("boxes", |t| t.lines().next().is_some_and(|l| l.starts_with('╭') && l.contains("╮ ╭"))).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
 }

@@ -99,7 +99,7 @@ struct RawOptions {
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum Style {
-    Classic,
+    Plain,
     Islands,
 }
 
@@ -300,7 +300,7 @@ impl Default for Config {
             repeat_time: 1000,
             navigator_apps: Vec::new(),
             focus_top_left: true,
-            islands: false,
+            islands: true,
             sidebar: SidebarCfg {
                 position: Position::Left,
                 width: 24,
@@ -425,8 +425,9 @@ mod tests {
         assert_eq!(c.sidebar.position, Position::Left);
         assert_eq!(c.sidebar.default_mode, SidebarMode::Windows);
         assert!(c.sidebar.follow);
-        assert!(c.mouse && c.clipboard && c.focus_top_left && !c.islands);
-        assert!(Config::from_toml("[options]\nstyle = \"islands\"").unwrap().islands);
+        assert!(c.mouse && c.clipboard && c.focus_top_left && c.islands);
+        assert!(!Config::from_toml("[options]\nstyle = \"plain\"").unwrap().islands);
+        assert!(Config::from_toml("[options]\nstyle = \"classic\"").is_err());
         assert!(Config::from_toml("[options]\nstyle = \"fancy\"").is_err());
         assert_eq!(c.root_keys[&(Key::Tab, CTRL)], Action::RecentWindow(true));
         assert_eq!(c.prefix_keys[&(Key::Tab, 0)], Action::RecentWindow(true));
