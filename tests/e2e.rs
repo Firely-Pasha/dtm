@@ -1255,7 +1255,8 @@ async fn search_filters_windows_fuzzily() {
     h.wait_text("/").await;
     h.send("srv");
     h.wait_for("filtered to the server window", |t| t.contains("2 server") && !t.contains("1 alpha") && !t.contains("3 shell")).await;
-    // A window that has not started is not previewed while searching; Enter starts it.
+    // A window that has not started only shows a placeholder while searching; Enter starts it.
+    h.wait_text("Not loaded").await;
     assert!(!h.text().contains("SRV7"), "{}", h.text());
     h.send("\r");
     h.wait_for("search closed", |t| !t.contains("⏎ open") && t.contains("1 alpha") && t.contains("SRV7")).await;
@@ -1818,4 +1819,25 @@ async fn window_number_keys_move_the_focused_sidebar_selection() {
     h.wait_text("›1 sh").await;
     h.send(&format!("{CTRL_A}2"));
     h.wait_text("›2 sh").await;
+}
+
+#[tokio::test]
+async fn hovering_a_window_in_the_sidebar_does_not_start_it() {
+    let env = Env::new("hover-lazy", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: hv\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("ONE1").await;
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("j");
+    h.wait_text("Not loaded").await;
+    h.send("k");
+    h.wait_text("ONE1").await;
+    h.send("jj");
+    h.send("\r");
+    h.wait_text("TWO2").await;
 }

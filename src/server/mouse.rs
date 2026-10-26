@@ -222,6 +222,7 @@ impl Server {
             SidebarMode::Sessions => {
                 let id = self.sessions[idx].id;
                 self.switch_client(cid, id);
+                self.focus_shown(id);
             }
         }
         self.mark_dirty();

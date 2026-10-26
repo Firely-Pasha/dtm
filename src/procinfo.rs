@@ -40,8 +40,7 @@ pub fn group_commands(pgrp: i32) -> Vec<String> {
 
 /// Is this program one that handles Ctrl-h/j/k/l navigation itself?
 ///
-/// This is the pattern vim-tmux-navigator uses,
-/// `g?\.?(view|l?n?vim?x?|fzf)(diff)?(-wrapped)?`, plus any `extra` names.
+/// The names matched are `g?\.?(view|l?n?vim?x?|fzf)(diff)?(-wrapped)?`, plus any `extra` names.
 pub fn is_editor(comm: &str, extra: &[String]) -> bool {
     let name = comm.rsplit('/').next().unwrap_or(comm);
     if extra.iter().any(|e| e == name) {

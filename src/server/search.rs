@@ -32,10 +32,8 @@ impl Server {
     fn search_follow(&mut self, cid: ClientId) {
         let Some((sid, rows)) = self.search_rows(cid) else { return };
         let sel = self.clients.get(&cid).and_then(|c| c.sidebar_focus).unwrap_or(0);
-        // Only windows that are already loaded are previewed; Enter starts the others.
         if self.cfg.sidebar.follow
             && let Some(&wi) = rows.get(sel)
-            && self.sessions.iter().find(|s| s.id == sid).is_some_and(|s| !s.windows[wi].pending)
         {
             self.select_window(sid, wi);
         }

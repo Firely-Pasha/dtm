@@ -198,6 +198,13 @@ impl Server {
         self.remember_window(si, id);
     }
 
+    /// The window a session shows counts as focused (a session chosen, not just hovered).
+    pub(super) fn focus_shown(&mut self, sid: SessionId) {
+        let Some(si) = self.session_index(sid) else { return };
+        let id = self.sessions[si].active_window().id;
+        self.remember_window(si, id);
+    }
+
     fn focus_top_left(&mut self, si: usize, wi: usize) {
         let w = &mut self.sessions[si].windows[wi];
         if !self.cfg.focus_top_left || w.zoomed {
@@ -329,6 +336,7 @@ impl Server {
     fn drop_window(&mut self, si: usize, wi: usize) {
         let sid = self.sessions[si].id;
         let s = &mut self.sessions[si];
+        let was_active = s.active;
         s.windows.remove(wi);
         if s.windows.is_empty() {
             self.remove_session(sid);
@@ -344,6 +352,11 @@ impl Server {
         }
         s.active = s.active.min(s.windows.len() - 1);
         s.normalize_groups();
+        // Closing the shown window lands on another one, which then counts as focused.
+        if wi == was_active {
+            let id = s.active_window().id;
+            self.remember_window(si, id);
+        }
     }
 
     pub fn locate_pane(&self, pane: PaneId) -> Option<(usize, usize)> {
@@ -510,6 +523,7 @@ impl Server {
                 if let Some(s) = self.sessions.get(n - 1) {
                     let id = s.id;
                     self.switch_client(cid, id);
+                    self.focus_shown(id);
                 }
                 Ok(())
             }
@@ -697,6 +711,7 @@ impl Server {
         let next = if forward { (si + 1) % n } else { (si + n - 1) % n };
         let id = self.sessions[next].id;
         self.switch_client(cid, id);
+        self.focus_shown(id);
     }
 
     fn unzoom_window(&mut self, si: usize, wi: usize) {
@@ -1025,10 +1040,14 @@ impl Server {
             SidebarMode::Windows if open => self.open_window(sid, idx),
             SidebarMode::Windows => self.select_window(sid, idx),
             SidebarMode::Sessions => {
-                if let Some(id) = self.sessions.get(idx).map(|s| s.id)
-                    && id != sid {
+                if let Some(id) = self.sessions.get(idx).map(|s| s.id) {
+                    if id != sid {
                         self.switch_client(cid, id);
                     }
+                    if open {
+                        self.focus_shown(id);
+                    }
+                }
             }
         }
     }

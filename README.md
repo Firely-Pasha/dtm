@@ -7,21 +7,41 @@ Everything below the PTY is written from scratch: the VT/ANSI parser, the
 screen model, the frame differ and the layout engine. There is no `vt100`,
 `vte` or `portable-pty`.
 
+- **Windows, splits and sessions**, with a sidebar listing them (click, search, reorder).
+- **[Window groups](#window-groups)** with one-letter tags: `Ctrl-a g 1` jumps to window 1 of group `g`.
+- **[Projects](#projects)**: describe a session's windows, splits and start commands in
+  YAML, open it with `dtm open`, export a running session back to a file.
+- **A [dock](#the-dock)** for session-wide panes (lazygit, a log tail) and a **[popup](#popup)** shell.
+- Maximize, zoom, copy mode, mouse support, recently-used window cycling.
+- Seamless `Ctrl-h/j/k/l` movement between panes and [Neovim](#neovim-plugin) splits.
+- Works on Linux and macOS.
+
 ## Usage
 
 ```
 cargo build --release          # binary: target/release/dtm
+cargo install --path .         # or install it into ~/.cargo/bin
 
 dtm                            # attach to the first session (starting the server and a session if needed)
 dtm new -s work                # new named session
 dtm attach -t work             # attach to an existing session
 dtm ls                         # list sessions
+dtm open [FILE|DIR|NAME]       # open a project file (see Projects)
+dtm export [FILE|DIR|NAME]     # write the running session to a project file
+dtm project ls|edit|rm         # manage saved projects
 dtm reload                     # re-read the config file
 dtm select-pane -R             # move pane focus (used by editor plugins, see below)
+dtm query '#{pane_at_left}'    # print a pane's state (used by editor plugins)
 dtm kill-server                # end the server and every session
 ```
 
 The default prefix is **Ctrl-a**. The server exits when its last session ends.
+To close one session, focus the sidebar (`<prefix> w`), switch it to sessions
+(`Tab`), select the session and press `x`.
+
+On macOS a binary that was copied or rebuilt can be killed on start (`Killed: 9`)
+because its code signature no longer matches; re-sign it with
+`codesign --force --sign - /path/to/dtm`.
 
 ## Default keys (after the prefix)
 
@@ -51,18 +71,7 @@ Without the prefix: **`Ctrl-h` `Ctrl-j` `Ctrl-k` `Ctrl-l`** move between panes
 
 **Maximize**: `<prefix> m` makes the focused thing fill the whole terminal: a window pane, a dock pane, the popup, or the sidebar (when it has focus). The pane is resized to the full screen, so lazygit or vim redraw at full size. Press it again to restore. Moving focus to something else (or hiding the popup or dock) restores it too. Unlike `z`, which zooms inside the pane area, this hides the sidebar and dock as well.
 
-**Window groups**: windows belong to groups, which the sidebar shows under a heading
-(`g code`) once there is more than one. A group has a name and a one-letter *tag*
-(shown in its heading); a window's tag is its place in its group, `1`-`9` and then
-`a`-`z`. `<prefix> <group tag> <window tag>` opens a window, e.g. `Ctrl-a g 1` is the
-first window of the group tagged `g`, and `<prefix> 1`-`9` picks from the first group.
-`<prefix> C` asks for a name and starts a group with a new window (its tag is
-picked from the name's letters, avoiding bound keys). In the focused sidebar `g`
-renames the selected window's group and `t` gives it another tag; a tag that is
-already a prefix binding or another group's is refused. `J`/`K` move a window within
-its group, then into the next or previous group; a group's only window moves the whole
-group. `<prefix> c` adds to the group of the shown window; an emptied group disappears.
-Project files say `group: NAME` on windows and may list `groups:` (see below).
+**Window groups**: windows are organised in groups with one-letter tags, and `<prefix> <group tag> <window tag>` opens a window, e.g. `Ctrl-a g 1`. See [Window groups](#window-groups).
 
 **Recent windows**: `<prefix> Tab` toggles to the previously opened window; for
 the repeat time after it (`options.repeat_time`, 1 second) plain `Tab` goes
@@ -80,7 +89,7 @@ an iTerm2 key mapping "Send Escape Sequence" `[9;5u`. xterm's
 **Switching windows** focuses the top-left pane of the window
 (`options.window_focus = "last"` keeps the pane that was focused there).
 
-**Resizing**: while you resize (and for the repeat window after it), the middle of the pane shows its size as `columns×rows`, and the sidebar or dock shows its width, so panes in different windows can be lined up.
+**Size indicator**: while you resize (and for the repeat window after it), the middle of the pane shows its size as `columns×rows`, and the sidebar or dock shows its width, so panes in different windows can be lined up.
 
 **Resizing**: while the sidebar or the dock has focus, `<prefix> h` / `l` move its inner edge to resize it, and then plain `h` / `l` keep resizing by one cell for a second, as for panes. Both widths belong to the session (every client and later attach sees them); the dock's is also exported. Otherwise `<prefix> h j k l` resizes the focused pane by 5 cells, then plain `h j k l` keep
 resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
@@ -91,8 +100,8 @@ don't have to press the prefix again for every step. Any other key ends it.
 to cancel). Copied text is
 kept in dtm's paste buffer and also sent to the terminal clipboard (OSC 52).
 
-**Mouse**: click a sidebar entry to switch window or session, click a pane to
-focus it, scroll the wheel to enter copy mode (or scroll full-screen apps).
+**Mouse**: click a sidebar entry (or a group's title) to switch window or session,
+click a pane or a dock tab to focus it, scroll the wheel to enter copy mode (or scroll full-screen apps).
 Applications that request mouse reporting receive the events. Hold Shift to
 select text with the terminal itself, or set `mouse = false`.
 
@@ -107,34 +116,22 @@ binding. (A terminal that sends `Ctrl-h` for Backspace will lose Backspace; most
 send `0x7f`.)
 
 If an editor is in the foreground of the active pane, dtm hands the key to it
-instead. That is the same idea as vim-tmux-navigator: the editor moves between its
-own windows and, when it is already at the edge, asks dtm to move pane focus. The
-editor is recognised by process name: `vim`, `nvim`, `view`, `vimdiff`, `fzf`
+instead: the editor moves between its own windows and, when it is already at the
+edge, asks dtm to move pane focus (`dtm select-pane`, see below). The editor is recognised by process name: `vim`, `nvim`, `view`, `vimdiff`, `fzf`
 (including Nix's `.nvim-wrapped`), plus anything listed in
 `options.navigator_apps`.
 
 ### Neovim plugin
 
 This repository is also the Neovim plugin: `plugin/` and `lua/dtm_navigator/` at the
-root provide the same mappings, commands and options as vim-tmux-navigator, talking
-to dtm instead of tmux (vim-tmux-navigator itself only works with tmux). With
-lazy.nvim:
+root make Ctrl-h/j/k/l move between Neovim windows and, at the edge of Neovim, hand
+over to dtm (via `dtm select-pane`). With lazy.nvim:
 
 ```lua
 { "Firely-Pasha/dtm", name = "dtm-navigator" }
 ```
 
-Outside dtm (no `$DTM_PANE`) it only moves between Neovim windows. If you also use
-tmux, load it only inside dtm, and vim-tmux-navigator elsewhere, since both map the
-same keys:
-
-```lua
-local in_dtm = (vim.env.DTM_PANE or "") ~= ""
-return {
-  { "christoomey/vim-tmux-navigator", cond = not in_dtm },
-  { "Firely-Pasha/dtm", name = "dtm-navigator", cond = in_dtm },
-}
-```
+Outside dtm (no `$DTM_PANE`) it only moves between Neovim windows.
 
 Without a plugin manager, clone the repository and `set rtp+=/path/to/dtm`.
 Neovim only (classic Vim is not supported). It uses APIs available since Neovim 0.7
@@ -172,7 +169,7 @@ where each pane starts and what it runs. See
 ```yaml
 name: app                 # session name (default: the directory's name)
 root: ~/code/app          # default: the directory of the file
-lazy: true                # default: a window starts when first shown
+lazy: true                # default: a window starts when you open it (hovering shows "Not loaded")
 groups:                   # optional: window groups, in order (tag: one letter, optional)
   - {name: code, tag: g}  # Ctrl-a g 1 opens the first window of this group
 windows:
@@ -206,8 +203,9 @@ windows:
   applies to panes you create later in the session (splits, new windows, the
   popup, dock panes) and to respawned ones.
 - **Lazy start.** Only the first window is created when the project opens; the
-  others get their panes and run their commands the first time you show them
-  (a `…` marks them in the sidebar). Set `lazy: false` on the file or on a
+  others get their panes and run their commands the first time you open them
+  (a `…` marks them in the sidebar; just moving the selection over one shows
+  "Not loaded" and starts nothing). Set `lazy: false` on the file or on a
   window to start it at once.
 - **Opening.** `dtm` in a directory with a `project.dtm.yaml` opens it.
   `dtm open [FILE|DIR|NAME]` takes a file, a directory holding one, or a saved
@@ -267,20 +265,69 @@ and `height` size it) and `<prefix> P` again hides it; it keeps running while
 hidden. While it is shown it has the keyboard, and `<prefix> x` (or exiting the
 shell) closes it.
 
+## Window groups
+
+Windows belong to groups, so a session with many windows stays easy to navigate.
+Every session starts with one group, `main`.
+
+- **Tags.** A group has a name and a one-letter tag (`a`-`z`, `A`-`Z`). A window
+  has no number of its own: its tag is its place in its group, `1`-`9` and then
+  `a`-`z` (so a group holds up to 35 windows). Adding, moving or closing windows
+  re-tags the ones after them.
+- **Opening a window.** `<prefix> <group tag> <window tag>`: `Ctrl-a g 1` is the
+  first window of the group tagged `g`, `Ctrl-a g a` its tenth. After the group
+  tag the status line reads `group NAME: window?`; any key that is not a window
+  tag cancels. `<prefix> 1`-`9` picks from the first group, as it always did.
+  When the sidebar has focus, its selection follows the window that opens.
+- **New group.** `<prefix> C` asks for a name (empty: `2`, `3`, ...) and starts the
+  group with a new window. Its tag is taken from the letters of the name, skipping
+  ones that are taken. `<prefix> c` adds a window to the group of the shown one.
+  A group with no windows left disappears.
+- **Rename and re-tag.** With the sidebar focused (`<prefix> w`), `g` renames the
+  group of the selected window and `t` gives it another tag. A tag is refused,
+  with the reason shown, when it is not one letter, when it is already bound after
+  the prefix (`C-a c is already bound`), or when another group has it.
+- **Moving windows.** In the sidebar `J`/`K` move a window within its group; past
+  the group's edge it joins the next or previous group. A window that is alone in
+  its group moves the whole group instead, which is how groups are reordered.
+- **In the sidebar.** With one group its name is the title under the session name,
+  with its tag at the right edge. With several, each group has such a title row
+  above its windows; clicking a title opens the group's first window.
+- **Search.** `<prefix> f` finds windows across groups: labels read `g1 server`
+  (group tag, window tag, name) and a group's name matches its windows too.
+- **Projects.** A window says `group: NAME`; a top-level `groups:` list sets the
+  order and, optionally, the tags (a tag that is already bound is replaced by a free
+  one). Windows without `group` are in `main`. Exporting writes both back, but
+  only when there is more than one group or the one group is not `main`.
+
+```yaml
+groups:
+  - {name: code, tag: g}
+  - {name: ops, tag: o}
+windows:
+  - {name: edit, group: code}
+  - {name: test, group: code}     # Ctrl-a g 2
+  - {name: logs, group: ops}      # Ctrl-a o 1
+```
+
+Actions (bindable in `[keys.prefix]` and `[keys.sidebar]`): `new-group`,
+`sidebar-rename-group`, `sidebar-group-tag`.
+
 ## Searching windows
 
 `<prefix> f`, or `/` in the focused sidebar, filters the windows by typing
 (fuzzy: `srv` finds `2 server`; with several groups the labels read `g1 server`, and a
-group's name finds its windows). Only windows that are already running are shown while
-you move through the results; `Enter` starts and opens the chosen one. `Up`/`Down` (or `Ctrl-n`/`Ctrl-p`) move the
+group's name finds its windows). A project window that has not
+started shows "Not loaded" while you move through the results; `Enter` starts and opens it. `Up`/`Down` (or `Ctrl-n`/`Ctrl-p`) move the
 selection, which shows that window as you go; `Enter` opens it and `Esc` goes
 back to where you were.
 
 ## Sidebar
 
 A column on the left or right (`[sidebar] position`) lists the current
-session's windows (`1 vim`, with `●` for activity, `!` for a bell, `Z` when
-zoomed). `<prefix> s` toggles it to a list of sessions. Window names come from
+session's windows, under their group's title when there are several
+([groups](#window-groups)): `1 vim`, with `●` for activity, `!` for a bell, `Z` when
+zoomed. `<prefix> s` toggles it to a list of sessions. Window names come from
 `rename-window`, else the pane's title (OSC 0/2), else the foreground process.
 It hides itself when the terminal is too narrow.
 
@@ -301,7 +348,12 @@ Prompts (rename, confirmations, the dock command) are a box in the middle of the
 checked by the test suite to match the built-in defaults.
 
 - `options.shell` is the program started in new panes (default `$SHELL`, then
-  `/bin/sh`).
+  `/bin/sh`). The other `[options]`: `prefix` (default `C-a`), `history_limit`
+  (scrollback lines per pane, 10000), `mouse`, `clipboard` (copy also goes to the
+  terminal clipboard), `repeat_time` (ms, 1000), `navigator_apps` and
+  `window_focus` (`"top-left"` or `"last"`).
+- `[sidebar]` sets `position` (`left`/`right`), `width`, `visible`, `default_mode`
+  (`windows`/`sessions`) and `follow`; `[popup]` sets `width` and `height`.
 - `[keys.prefix]`, `[keys.root]`, `[keys.copy]`, `[keys.resize]` and
   `[keys.sidebar]` map keys to actions. Set a
   binding to `"none"` to remove a default.
@@ -323,7 +375,7 @@ checked by the test suite to match the built-in defaults.
 
 ## Other environment variables
 
-`DTM_SOCKET` overrides the socket path (default `$XDG_RUNTIME_DIR/dtm/default.sock`,
+`DTM_CONFIG` overrides the config file path. `DTM_SOCKET` overrides the socket path (default `$XDG_RUNTIME_DIR/dtm/default.sock`,
 falling back to `/tmp/dtm-$UID/`). The server logs to
 `$XDG_STATE_HOME/dtm/server.log`.
 
@@ -346,8 +398,10 @@ dtm (client) ──unix socket, length-prefixed bincode──► dtm server
 
 ```
 src/term/     parser.rs (VT500 state machine), screen.rs (emulator), canvas.rs (frame + differ)
-src/server/   layout.rs, render.rs, sidebar.rs, copy.rs, mouse.rs, input.rs, actions.rs
-src/          keys.rs, action.rs, config.rs, protocol.rs, pty.rs, client.rs, procinfo.rs
+src/server/   mod.rs (event loop, rendering), state.rs, actions.rs, input.rs, mouse.rs, layout.rs,
+              render.rs, sidebar.rs, copy.rs, groups.rs, search.rs, project.rs, extra.rs (dock, popup), ipc.rs
+src/          keys.rs, action.rs, config.rs, project.rs, protocol.rs, pty.rs, client.rs,
+              procinfo.rs, sysproc.rs (process info on Linux and macOS), fuzzy.rs
 plugin/, lua/   Neovim plugin for Ctrl-h/j/k/l navigation
 ```
 

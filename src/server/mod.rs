@@ -324,7 +324,10 @@ impl Server {
             }
         };
         match result {
-            Ok(sid) => self.switch_client(cid, sid),
+            Ok(sid) => {
+                self.switch_client(cid, sid);
+                self.focus_shown(sid);
+            }
             Err(e) => {
                 self.send(cid, ServerMsg::Error(e));
                 if self.should_exit() {

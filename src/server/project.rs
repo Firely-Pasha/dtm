@@ -47,7 +47,10 @@ impl Server {
             None => self.create_project_session(cid, &plan, source),
         };
         match result {
-            Ok(sid) => self.switch_client(cid, sid),
+            Ok(sid) => {
+                self.switch_client(cid, sid);
+                self.focus_shown(sid);
+            }
             Err(e) => self.send(cid, ServerMsg::Error(e)),
         }
     }
@@ -149,7 +152,7 @@ impl Server {
 
     // ---- starting windows ----
 
-    /// Start the pending window every attached client is looking at.
+    /// Start the pending window every attached client has focused (opened, not just hovered).
     pub fn start_visible_windows(&mut self) {
         self.start_visible_dock();
         let mut jobs: Vec<(usize, usize)> = Vec::new();
@@ -157,7 +160,8 @@ impl Server {
             if s.windows.is_empty() || !self.clients.values().any(|c| c.session == Some(s.id)) {
                 continue;
             }
-            if s.active_window().pending {
+            let w = s.active_window();
+            if w.pending && s.recent.first() == Some(&w.id) {
                 jobs.push((si, s.active));
             }
         }
