@@ -40,29 +40,50 @@ pub enum Node {
     Split { axis: Axis, ratio: f32, a: Box<Node>, b: Box<Node> },
 }
 
-/// Smallest size a pane can be shrunk to by resizing.
-const MIN_PANE: u16 = 2;
+/// How panes are spaced: what separates them and how small resizing may make one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Spacing {
+    /// Cells between stacked panes (side by side panes always have one).
+    pub row_gap: u16,
+    /// Smallest size a pane can be shrunk to by resizing.
+    pub min_pane: u16,
+}
 
-fn split_rect(axis: Axis, ratio: f32, r: Rect) -> (Rect, Rect) {
+impl Spacing {
+    /// Panes split by single lines.
+    pub const CLASSIC: Spacing = Spacing { row_gap: 1, min_pane: 2 };
+    /// Every pane is a box of its own: boxes sit directly on top of each other.
+    pub const ISLANDS: Spacing = Spacing { row_gap: 0, min_pane: 3 };
+
+    fn gap(&self, axis: Axis) -> u16 {
+        match axis {
+            Axis::Cols => 1,
+            Axis::Rows => self.row_gap,
+        }
+    }
+}
+
+fn split_rect(axis: Axis, ratio: f32, r: Rect, sp: Spacing) -> (Rect, Rect) {
     let total = match axis {
         Axis::Cols => r.w,
         Axis::Rows => r.h,
     };
-    if total < 3 {
-        // No room for two panes and a border: the second gets nothing.
+    let gap = sp.gap(axis);
+    if total < 2 + gap {
+        // No room for two panes and what separates them: the second gets nothing.
         let empty = Rect::new(r.x, r.y, 0, 0);
         return (r, empty);
     }
-    let avail = total - 1;
+    let avail = total - gap;
     let alen = ((avail as f32 * ratio).round() as u16).clamp(1, avail - 1);
     match axis {
         Axis::Cols => (
             Rect::new(r.x, r.y, alen, r.h),
-            Rect::new(r.x + alen + 1, r.y, avail - alen, r.h),
+            Rect::new(r.x + alen + gap, r.y, avail - alen, r.h),
         ),
         Axis::Rows => (
             Rect::new(r.x, r.y, r.w, alen),
-            Rect::new(r.x, r.y + alen + 1, r.w, avail - alen),
+            Rect::new(r.x, r.y + alen + gap, r.w, avail - alen),
         ),
     }
 }
@@ -157,26 +178,26 @@ impl Node {
         }
     }
 
-    pub fn layout(&self, rect: Rect, out: &mut Vec<(PaneId, Rect)>) {
+    pub fn layout(&self, rect: Rect, sp: Spacing, out: &mut Vec<(PaneId, Rect)>) {
         match self {
             Node::Leaf(id) => out.push((*id, rect)),
             Node::Split { axis, ratio, a, b } => {
-                let (ra, rb) = split_rect(*axis, *ratio, rect);
-                a.layout(ra, out);
-                b.layout(rb, out);
+                let (ra, rb) = split_rect(*axis, *ratio, rect, sp);
+                a.layout(ra, sp, out);
+                b.layout(rb, sp, out);
             }
         }
     }
 
     /// Move the border nearest to `target` in direction `dir` by `amount` cells.
-    pub fn resize(&mut self, target: PaneId, dir: Dir, amount: u16, rect: Rect) -> bool {
+    pub fn resize(&mut self, target: PaneId, dir: Dir, amount: u16, rect: Rect, sp: Spacing) -> bool {
         let Node::Split { axis, ratio, a, b } = self else { return false };
-        let (ra, rb) = split_rect(*axis, *ratio, rect);
+        let (ra, rb) = split_rect(*axis, *ratio, rect, sp);
         if a.contains(target) {
-            if a.resize(target, dir, amount, ra) {
+            if a.resize(target, dir, amount, ra, sp) {
                 return true;
             }
-        } else if b.contains(target) && b.resize(target, dir, amount, rb) {
+        } else if b.contains(target) && b.resize(target, dir, amount, rb, sp) {
             return true;
         }
         let (applies, sign, total) = match (*axis, dir) {
@@ -186,11 +207,12 @@ impl Node {
             (Axis::Rows, Dir::Down) => (true, 1.0, rect.h),
             _ => (false, 0.0, 0),
         };
-        if !applies || total < 2 * MIN_PANE + 1 {
+        let gap = sp.gap(*axis);
+        if !applies || total < 2 * sp.min_pane + gap {
             return false;
         }
-        let avail = (total - 1) as f32;
-        let min = MIN_PANE as f32 / avail;
+        let avail = (total - gap) as f32;
+        let min = sp.min_pane as f32 / avail;
         *ratio = (*ratio + sign * amount as f32 / avail).clamp(min, 1.0 - min);
         true
     }
@@ -231,7 +253,7 @@ mod tests {
 
     fn rects(t: &Node, w: u16, h: u16) -> Vec<(PaneId, Rect)> {
         let mut v = Vec::new();
-        t.layout(Rect::new(0, 0, w, h), &mut v);
+        t.layout(Rect::new(0, 0, w, h), Spacing::CLASSIC, &mut v);
         v
     }
 
@@ -275,24 +297,24 @@ mod tests {
     fn resize_moves_the_right_border() {
         let mut t = tree();
         let area = Rect::new(0, 0, 81, 25);
-        assert!(t.resize(1, Dir::Right, 10, area));
+        assert!(t.resize(1, Dir::Right, 10, area, Spacing::CLASSIC));
         let r = rects(&t, 81, 25);
         assert_eq!(r[0].1.w, 50);
         // pane 3 growing down moves the horizontal border
-        assert!(t.resize(3, Dir::Up, 4, Rect::new(51, 0, 30, 25)));
+        assert!(t.resize(3, Dir::Up, 4, Rect::new(51, 0, 30, 25), Spacing::CLASSIC));
         let r = rects(&t, 81, 25);
         assert!(r[2].1.h > r[1].1.h);
         // no vertical split above pane 1 in the Rows direction
-        assert!(!t.resize(1, Dir::Down, 1, area));
+        assert!(!t.resize(1, Dir::Down, 1, area, Spacing::CLASSIC));
     }
 
     #[test]
     fn resize_clamps_to_min_size() {
         let mut t = tree();
         let area = Rect::new(0, 0, 81, 25);
-        t.resize(1, Dir::Left, 1000, area);
+        t.resize(1, Dir::Left, 1000, area, Spacing::CLASSIC);
         assert_eq!(rects(&t, 81, 25)[0].1.w, 2);
-        t.resize(1, Dir::Right, 1000, area);
+        t.resize(1, Dir::Right, 1000, area, Spacing::CLASSIC);
         assert_eq!(rects(&t, 81, 25)[1].1.w, 2);
     }
 
@@ -307,5 +329,28 @@ mod tests {
         assert_eq!(neighbor(&r, 1, Dir::Left), None);
         assert_eq!(neighbor(&r, 1, Dir::Up), None);
         assert_eq!(neighbor(&r, 3, Dir::Down), None);
+    }
+
+    #[test]
+    fn islands_stack_boxes_with_no_gap_but_keep_the_one_between_columns() {
+        let sp = Spacing::ISLANDS;
+        let mut v = Vec::new();
+        tree().layout(Rect::new(0, 0, 21, 10), sp, &mut v);
+        // 1 | (2 / 3): a gap column between 1 and the right side, none between 2 and 3
+        assert_eq!(v[0], (1, Rect::new(0, 0, 10, 10)));
+        assert_eq!(v[1], (2, Rect::new(11, 0, 10, 5)));
+        assert_eq!(v[2], (3, Rect::new(11, 5, 10, 5)));
+    }
+
+    #[test]
+    fn islands_never_resize_a_box_below_three_cells() {
+        let mut t = Node::Leaf(1);
+        t.split(1, Axis::Rows, 2);
+        let area = Rect::new(0, 0, 20, 10);
+        assert!(t.resize(1, Dir::Down, 100, area, Spacing::ISLANDS));
+        let mut v = Vec::new();
+        t.layout(area, Spacing::ISLANDS, &mut v);
+        assert_eq!(v[1].1.h, 3, "{v:?}");
+        assert!(!t.resize(1, Dir::Down, 1, Rect::new(0, 0, 20, 5), Spacing::ISLANDS), "too small to move");
     }
 }

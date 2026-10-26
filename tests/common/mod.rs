@@ -89,6 +89,22 @@ impl Harness {
         }
     }
 
+    /// Pump output until `pred` holds for the emulated screen (cells and their attributes).
+    pub async fn wait_screen(&mut self, what: &str, pred: impl Fn(&Screen) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !pred(&self.screen) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            assert!(!left.is_zero(), "timed out waiting for {what}; screen:\n{}", self.text());
+            if let Ok(Some(PtyEvent::Output(d))) = tokio::time::timeout(left, self.rx.recv()).await {
+                self.screen.feed(&d);
+                let r = self.screen.take_replies();
+                if !r.is_empty() {
+                    self.pty.write(r);
+                }
+            }
+        }
+    }
+
     /// Wait until the cell at (x, y) holds `ch`.
     pub async fn wait_cell(&mut self, x: usize, y: usize, ch: char) {
         let deadline = Instant::now() + Duration::from_secs(10);

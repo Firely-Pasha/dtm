@@ -106,13 +106,13 @@ impl Window {
         self.pinned_name.as_deref().unwrap_or(&self.auto_name)
     }
 
-    pub fn rects(&self, size: (u16, u16)) -> Vec<(PaneId, Rect)> {
+    pub fn rects(&self, size: (u16, u16), sp: super::layout::Spacing) -> Vec<(PaneId, Rect)> {
         let full = Rect::new(0, 0, size.0, size.1);
         if self.zoomed {
             return vec![(self.active, full)];
         }
         let mut v = Vec::new();
-        self.root.layout(full, &mut v);
+        self.root.layout(full, sp, &mut v);
         v
     }
 }

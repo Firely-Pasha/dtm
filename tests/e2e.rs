@@ -1889,3 +1889,113 @@ async fn an_unloaded_window_is_loaded_with_o_or_enter() {
     h.send("\r");
     h.wait_text("THREE3").await;
 }
+
+#[tokio::test]
+async fn islands_style_boxes_the_sidebar_and_panes_and_follows_reload() {
+    let env = Env::new("islands", "[options]\nstyle = \"islands\"\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    // the sidebar is a box in columns 0..22 (column 23 is the gap), panes start at column 24
+    h.wait_for("boxes", |t| t.lines().next().is_some_and(|l| l.starts_with("╭ 0 ") && l.contains("╮ ╭"))).await;
+    h.send("stty size\r");
+    h.wait_for("pane size", |t| t.contains("28 74")).await;
+
+    // a split makes two boxes with a gap between them; each pane is its box minus the border
+    h.send(&format!("{CTRL_A}|"));
+    h.send("stty size\r");
+    h.wait_for("split size", |t| t.contains("28 35")).await;
+    let first = h.screen.text()[0].clone();
+    assert!(first.matches('╭').count() == 3, "{first:?}");
+
+    // clicking a pane focuses it, and the sidebar still works with the mouse
+    h.send("\x1b[<0;30;5M\x1b[<0;30;5m");
+    h.send("echo left$((1+1))\r");
+    h.wait_text("left2").await;
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send("\x1b[<0;4;3M\x1b[<0;4;3m");
+    h.wait_for("back on window 1", |t| t.contains("left2")).await;
+
+    // back to classic
+    std::fs::write(&env.config, "[options]\nstyle = \"classic\"\n").unwrap();
+    let (ok, out) = env.run(&["reload"]);
+    assert!(ok, "{out}");
+    h.wait_for("classic", |t| !t.contains('╭')).await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn islands_style_boxes_the_dock() {
+    let env = Env::new("islands-dock", "[options]\nstyle = \"islands\"\n");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: dk\ndock:\n  width: 40\n  visible: true\n  panes:\n    - {name: logs, command: \"echo DOCK$((1+1))\"}\nwindows:\n  - {name: w}\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("DOCK2").await;
+    let text = h.text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].trim_end().ends_with('╮') && lines[0].matches('╭').count() == 3, "{text}");
+    assert!(lines[1].contains(" logs "), "tab row sits inside the box: {text}");
+    assert!(lines[29].trim_end().ends_with('╯'), "{text}");
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn islands_not_loaded_placeholder_is_a_box_and_panes_lose_focus_in_the_sidebar() {
+    use dtm::term::cell::Color;
+    let env = Env::new("islands-focus", "[options]\nstyle = \"islands\"\n");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: if\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("ONE1").await;
+    // the sidebar is 24 columns wide, so the pane's box starts at column 24
+    assert_eq!((h.screen.cell(24, 0).ch, h.screen.cell(24, 0).attrs.fg), ('╭', Color::Idx(2)), "{}", h.text());
+
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.wait_screen("pane box no longer highlighted", |s| s.cell(24, 0).attrs.fg == Color::Idx(8)).await;
+    h.send("j");
+    h.wait_text("Not loaded").await;
+    // the placeholder fills the whole area with a box, which is not highlighted either
+    assert_eq!((h.screen.cell(24, 0).ch, h.screen.cell(99, 29).ch), ('╭', '╯'), "{}", h.text());
+    assert_eq!(h.screen.cell(24, 0).attrs.fg, Color::Idx(8));
+    h.send("q");
+    h.wait_screen("focus back on the panes", |s| s.cell(24, 0).attrs.fg == Color::Idx(2)).await;
+}
+
+#[tokio::test]
+async fn islands_panes_shrink_to_one_text_row_or_column_and_keep_their_borders() {
+    let env = Env::new("islands-min", "[options]\nstyle = \"islands\"\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}-"));
+    for _ in 0..10 {
+        h.send(&format!("{CTRL_A}J"));
+    }
+    // the lower box is as small as it gets: top border, one row of text, bottom border
+    h.wait_screen("lower box at its minimum", |s| s.cell(24, 27).ch == '╭').await;
+    let col: String = (24..30).map(|y| h.screen.cell(24, y).ch).collect();
+    assert_eq!(col, "││╰╭│╰", "{}", h.text());
+    h.send(&format!("{CTRL_A}J"));
+    // the single row still works: typed text shows in it
+    h.send("typed");
+    h.wait_text("$ typed").await;
+    assert_eq!(h.screen.cell(24, 27).ch, '╭', "it does not shrink further: {}", h.text());
+
+    h.send(&format!("{CTRL_A}x"));
+    h.wait_screen("single pane again", |s| s.cell(24, 29).ch == '╰' && s.cell(24, 20).ch == '│').await;
+    h.send(&format!("{CTRL_A}|"));
+    for _ in 0..20 {
+        h.send(&format!("{CTRL_A}L"));
+    }
+    h.wait_screen("right box at its minimum", |s| s.cell(97, 0).ch == '╭').await;
+    let row: String = (97..100).map(|x| h.screen.cell(x, 0).ch).collect();
+    assert_eq!(row, "╭─╮", "{}", h.text());
+}

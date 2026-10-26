@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use super::copy::CopyMode;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::layout::{PaneId, Rect};
+use super::layout::{PaneId, Rect, Spacing};
 use super::sidebar::truncate;
 use super::state::{Dock, Pane, Window};
 use crate::term::canvas::Canvas;
@@ -36,25 +36,68 @@ fn border_glyph(mask: u8) -> char {
 }
 
 /// Render `window` into a canvas of `size` (cols, rows).
-pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16, u16)) -> Canvas {
+/// A rounded box with its corners at (`x`, `y`) and `w` by `h` cells.
+pub(super) fn draw_box(canvas: &mut Canvas, (x, y, w, h): (usize, usize, usize, usize), attrs: Attrs) {
+    if w < 2 || h < 2 {
+        return;
+    }
+    let edge = |ch| Cell { ch, width: 1, attrs };
+    for dx in 1..w - 1 {
+        canvas.set(x + dx, y, edge('─'));
+        canvas.set(x + dx, y + h - 1, edge('─'));
+    }
+    for dy in 1..h - 1 {
+        canvas.set(x, y + dy, edge('│'));
+        canvas.set(x + w - 1, y + dy, edge('│'));
+    }
+    canvas.set(x, y, edge('╭'));
+    canvas.set(x + w - 1, y, edge('╮'));
+    canvas.set(x, y + h - 1, edge('╰'));
+    canvas.set(x + w - 1, y + h - 1, edge('╯'));
+}
+
+pub(super) fn border_attrs(active: bool) -> Attrs {
+    if active { BORDER_ACTIVE } else { BORDER }
+}
+
+/// A pane's text area inside its layout rect, which is a box in islands style.
+fn area(r: &Rect, islands: bool) -> (usize, usize, usize, usize) {
+    let (x, y, w, h) = (r.x as usize, r.y as usize, r.w as usize, r.h as usize);
+    if islands { (x + 1, y + 1, w.saturating_sub(2).max(1), h.saturating_sub(2).max(1)) } else { (x, y, w, h) }
+}
+
+/// Render `window`; `focused` is false while the sidebar, dock or popup has the keyboard,
+/// so that no pane looks focused.
+pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16, u16), islands: bool, focused: bool) -> Canvas {
     let (cols, rows) = (size.0 as usize, size.1 as usize);
     let mut canvas = Canvas::new(cols, rows);
     if window.pending {
+        // The placeholder is an island of its own, so the layout does not jump on loading.
+        if islands {
+            draw_box(&mut canvas, (0, 0, cols, rows), border_attrs(focused));
+        }
         let text = "Not loaded";
         let attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
-        canvas.put_str(cols.saturating_sub(text.len()) / 2, rows / 2, text, attrs, cols);
+        let (inner_w, inner_h) = if islands { (cols.saturating_sub(2), rows.saturating_sub(2)) } else { (cols, rows) };
+        let (ox, oy) = if islands { (1, 1) } else { (0, 0) };
+        canvas.put_str(ox + inner_w.saturating_sub(text.len()) / 2, oy + inner_h / 2, text, attrs, inner_w);
         let hint = "press o or Enter to load";
-        canvas.put_str(cols.saturating_sub(hint.len()) / 2, rows / 2 + 1, hint, attrs, cols);
+        canvas.put_str(ox + inner_w.saturating_sub(hint.len()) / 2, oy + inner_h / 2 + 1, hint, attrs, inner_w);
         return canvas;
     }
-    let rects = window.rects(size);
+    let active_box = |id: PaneId| focused && id == window.active;
+    let rects = window.rects(size, if islands { Spacing::ISLANDS } else { Spacing::CLASSIC });
     let mut owner: Vec<Option<PaneId>> = vec![None; cols * rows];
     for (id, r) in &rects {
         let Some(pane) = panes.get(id) else { continue };
         if r.w == 0 || r.h == 0 {
             continue;
         }
-        let (x, y, w, h) = (r.x as usize, r.y as usize, r.w as usize, r.h as usize);
+        if islands {
+            let outer = (r.x as usize, r.y as usize, r.w as usize, r.h as usize);
+            draw_box(&mut canvas, outer, border_attrs(active_box(*id)));
+        }
+        let (x, y, w, h) = area(r, islands);
         match &pane.copy {
             Some(copy) => draw_copy_view(&mut canvas, pane, copy, (x, y, w, h)),
             None => canvas.blit_screen(&pane.screen, x, y, w, h),
@@ -67,25 +110,29 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
         // Panes whose screen is smaller than their rect leave blanks behind.
         let _ = pane;
     }
-    if !window.zoomed {
-        draw_borders(&mut canvas, &owner, window.active);
+    if !window.zoomed && !islands {
+        // No pane id is 0, so with nothing focused no border is highlighted.
+        draw_borders(&mut canvas, &owner, if focused { window.active } else { 0 });
     }
     if let (Some(pane), Some((_, r))) = (
         panes.get(&window.active),
         rects.iter().find(|(id, _)| *id == window.active),
     ) {
+        let (ax, ay, aw, ah) = area(r, islands);
         let m = pane.screen.modes();
         canvas.app_cursor = m.app_cursor;
         canvas.bracketed_paste = m.bracketed_paste;
         canvas.cursor_style = m.cursor_style;
-        if let Some(copy) = &pane.copy {
-            if copy.cx < r.w as usize && copy.cy < r.h as usize {
-                canvas.cursor = Some((r.x as usize + copy.cx, r.y as usize + copy.cy));
+        if !focused {
+            canvas.cursor = None;
+        } else if let Some(copy) = &pane.copy {
+            if copy.cx < aw && copy.cy < ah {
+                canvas.cursor = Some((ax + copy.cx, ay + copy.cy));
             }
         } else if m.cursor_visible {
             let (cx, cy) = pane.screen.cursor_pos();
-            if cx < r.w as usize && cy < r.h as usize {
-                canvas.cursor = Some((r.x as usize + cx, r.y as usize + cy));
+            if cx < aw && cy < ah {
+                canvas.cursor = Some((ax + cx, ay + cy));
             }
         }
     }
@@ -141,17 +188,29 @@ pub fn draw_dock(
     dock: &Dock,
     panes: &HashMap<PaneId, Pane>,
     focused: bool,
+    islands: bool,
 ) -> Option<(usize, usize)> {
     let rows = canvas.rows;
     if w < 2 {
         return None;
     }
     canvas.fill(x, 0, w, rows, Cell::BLANK);
-    let (sep_x, px) = if sep_left { (x, x + 1) } else { (x + w - 1, x) };
-    let pw = w - 1;
+    let (sep_x, mut px) = if sep_left { (x, x + 1) } else { (x + w - 1, x) };
+    let mut pw = w - 1;
+    // Rows above the pane (the tab row, and in islands the box's top border) and below it.
+    let (top, bottom) = if islands { (1, 1) } else { (0, 0) };
     let sep = if focused { BORDER_ACTIVE } else { BORDER };
-    for y in 0..rows {
-        canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: sep });
+    if islands {
+        if w < 5 || rows < 4 {
+            return None;
+        }
+        draw_box(canvas, (px, 0, pw, rows), sep);
+        px += 1;
+        pw -= 2;
+    } else {
+        for y in 0..rows {
+            canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: sep });
+        }
     }
     let names: Vec<&str> = dock.entries.iter().map(|e| e.name.as_str()).collect();
     for (i, x0, x1) in dock_tabs(&names, dock.active, pw) {
@@ -160,21 +219,22 @@ pub fn draw_dock(
         } else {
             DIM
         };
-        canvas.fill(px + x0, 0, x1 - x0, 1, Cell::blank(attrs));
-        canvas.put_str(px + x0, 0, &format!(" {} ", truncate(names[i], x1 - x0 - 2)), attrs, x1 - x0);
+        canvas.fill(px + x0, top, x1 - x0, 1, Cell::blank(attrs));
+        canvas.put_str(px + x0, top, &format!(" {} ", truncate(names[i], x1 - x0 - 2)), attrs, x1 - x0);
     }
-    if rows < 2 {
+    if rows < 2 + top + bottom {
         return None;
     }
+    let body = top + 1;
     if dock.entries.is_empty() {
-        canvas.put_str(px + 1, 1, "no panes", DIM, pw.saturating_sub(1));
-        canvas.put_str(px + 1, 2, "prefix A adds one", DIM, pw.saturating_sub(1));
+        canvas.put_str(px + 1, body, "no panes", DIM, pw.saturating_sub(1));
+        canvas.put_str(px + 1, body + 1, "prefix A adds one", DIM, pw.saturating_sub(1));
         return None;
     }
     match dock.entries.get(dock.active).and_then(|e| e.pane).and_then(|p| panes.get(&p)) {
-        Some(pane) => draw_pane_view(canvas, pane, (px, 1, pw, rows - 1), focused),
+        Some(pane) => draw_pane_view(canvas, pane, (px, body, pw, rows - body - bottom), focused),
         None => {
-            canvas.put_str(px + 1, 1, "starting…", DIM, pw.saturating_sub(1));
+            canvas.put_str(px + 1, body, "starting…", DIM, pw.saturating_sub(1));
             None
         }
     }
@@ -418,6 +478,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn islands_are_rounded_boxes_around_each_pane() {
+        // 1 | 2 in a 9x4 area: the layout gives 4 + gap + 4, so two 4-wide boxes with a gap.
+        let root = Node::Split { axis: Axis::Cols, ratio: 0.5, a: Box::new(Node::Leaf(1)), b: Box::new(Node::Leaf(2)) };
+        let w = window(root, 2);
+        let mut panes = HashMap::new();
+        panes.insert(1, pane(1, 2, 2, "ab\r\ncd").await);
+        panes.insert(2, pane(2, 2, 2, "ef").await);
+        let c = render_window(&w, &panes, (9, 4), true, true);
+        assert_eq!(c.row_text(0), "╭──╮ ╭──╮");
+        assert_eq!(c.row_text(1), "│ab│ │ef│");
+        assert_eq!(c.row_text(2), "│cd│ │  │");
+        assert_eq!(c.row_text(3), "╰──╯ ╰──╯");
+        // the focused pane's box is highlighted, the other one is not
+        assert_eq!(c.cell(5, 0).attrs, BORDER_ACTIVE);
+        assert_eq!(c.cell(0, 0).attrs, BORDER);
+        assert_eq!(c.cursor, Some((7, 1)));
+    }
+
+    #[tokio::test]
+    async fn stacked_islands_touch_each_other() {
+        let root = Node::Split { axis: Axis::Rows, ratio: 0.5, a: Box::new(Node::Leaf(1)), b: Box::new(Node::Leaf(2)) };
+        let w = window(root, 1);
+        let mut panes = HashMap::new();
+        panes.insert(1, pane(1, 4, 1, "up").await);
+        panes.insert(2, pane(2, 4, 1, "dn").await);
+        let c = render_window(&w, &panes, (6, 6), true, true);
+        assert_eq!(c.row_text(0), "╭────╮");
+        assert_eq!(c.row_text(1), "│up  │");
+        assert_eq!(c.row_text(2), "╰────╯");
+        assert_eq!(c.row_text(3), "╭────╮");
+        assert_eq!(c.row_text(4), "│dn  │");
+        assert_eq!(c.row_text(5), "╰────╯");
+    }
+
+    #[tokio::test]
     async fn draws_split_with_junctions() {
         // 1 | (2 / 3) in a 9x5 area: left 4 wide, border at x=4, right 4 wide
         let mut root = Node::Leaf(1);
@@ -428,7 +523,7 @@ mod tests {
         panes.insert(1, pane(1, 4, 5, "one").await);
         panes.insert(2, pane(2, 4, 2, "two").await);
         panes.insert(3, pane(3, 4, 2, "three").await);
-        let c = render_window(&w, &panes, (9, 5));
+        let c = render_window(&w, &panes, (9, 5), false, true);
         let rows: Vec<String> = (0..5).map(|y| c.row_text(y)).collect();
         assert_eq!(rows, vec!["one │two", "    │", "    ├────", "    │thre", "    │e"]);
         assert_eq!(c.cell(4, 0).attrs, BORDER_ACTIVE);
@@ -448,7 +543,7 @@ mod tests {
         p.copy = Some(copy);
         let mut panes = HashMap::new();
         panes.insert(1, p);
-        let c = render_window(&w, &panes, (14, 2));
+        let c = render_window(&w, &panes, (14, 2), false, true);
         assert_eq!(c.row_text(0), "aaa [copy 2/2]");
         assert_eq!(c.row_text(1), "bbb");
         assert!(c.cell(0, 0).attrs.has(flags::REVERSE) && c.cell(1, 0).attrs.has(flags::REVERSE));
@@ -474,7 +569,7 @@ mod tests {
         let mut panes = HashMap::new();
         panes.insert(1, pane(1, 3, 3, "left").await);
         panes.insert(2, pane(2, 9, 3, "zoom").await);
-        let c = render_window(&w, &panes, (9, 3));
+        let c = render_window(&w, &panes, (9, 3), false, true);
         assert_eq!(c.row_text(0), "zoom");
         assert!(!(0..3).any(|y| c.row_text(y).contains('│')));
     }

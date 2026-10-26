@@ -55,6 +55,8 @@ pub struct Config {
     pub navigator_apps: Vec<String>,
     /// Switching to another window focuses its top-left pane (false: the pane focused last).
     pub focus_top_left: bool,
+    /// Draw the sidebar, every pane and the dock as separate rounded boxes.
+    pub islands: bool,
     pub sidebar: SidebarCfg,
     pub popup: PopupCfg,
     pub prefix_keys: HashMap<KeyCombo, Action>,
@@ -91,6 +93,14 @@ struct RawOptions {
     repeat_time: Option<u64>,
     navigator_apps: Option<Vec<String>>,
     window_focus: Option<WindowFocus>,
+    style: Option<Style>,
+}
+
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Style {
+    Classic,
+    Islands,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +300,7 @@ impl Default for Config {
             repeat_time: 1000,
             navigator_apps: Vec::new(),
             focus_top_left: true,
+            islands: false,
             sidebar: SidebarCfg {
                 position: Position::Left,
                 width: 24,
@@ -352,6 +363,9 @@ impl Config {
         if let Some(f) = raw.options.window_focus {
             cfg.focus_top_left = f == WindowFocus::TopLeft;
         }
+        if let Some(s) = raw.options.style {
+            cfg.islands = s == Style::Islands;
+        }
         let sb = &mut cfg.sidebar;
         if let Some(v) = raw.sidebar.position {
             sb.position = v;
@@ -411,7 +425,9 @@ mod tests {
         assert_eq!(c.sidebar.position, Position::Left);
         assert_eq!(c.sidebar.default_mode, SidebarMode::Windows);
         assert!(c.sidebar.follow);
-        assert!(c.mouse && c.clipboard && c.focus_top_left);
+        assert!(c.mouse && c.clipboard && c.focus_top_left && !c.islands);
+        assert!(Config::from_toml("[options]\nstyle = \"islands\"").unwrap().islands);
+        assert!(Config::from_toml("[options]\nstyle = \"fancy\"").is_err());
         assert_eq!(c.root_keys[&(Key::Tab, CTRL)], Action::RecentWindow(true));
         assert_eq!(c.prefix_keys[&(Key::Tab, 0)], Action::RecentWindow(true));
         assert_eq!(c.prefix_keys[&(Key::Char('/'), 0)], Action::SearchWindows);

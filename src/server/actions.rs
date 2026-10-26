@@ -60,7 +60,7 @@ impl Server {
 
     pub(super) fn make_window(&mut self, cwd: Option<PathBuf>, size: (u16, u16), group: GroupId) -> Result<Window, String> {
         let pane = self.alloc_pane_id();
-        self.spawn_pane(pane, cwd, size)?;
+        self.spawn_pane(pane, cwd, self.pane_size(size))?;
         Ok(Window {
             id: self.alloc_window_id(),
             pinned_name: None,
@@ -153,12 +153,14 @@ impl Server {
         let new_id = self.alloc_pane_id();
         tree.split(active, axis, new_id);
         let mut rects = Vec::new();
-        tree.layout(Rect::new(0, 0, size.0, size.1), &mut rects);
+        tree.layout(Rect::new(0, 0, size.0, size.1), self.spacing(), &mut rects);
         let r = rects.iter().find(|(id, _)| *id == new_id).map(|(_, r)| *r).ok_or("split failed")?;
-        if r.w == 0 || r.h == 0 {
+        // In islands style a pane needs room for its box as well.
+        let min = if self.cfg.islands { 3 } else { 1 };
+        if r.w < min || r.h < min {
             return Err("pane too small to split".into());
         }
-        self.spawn_pane(new_id, cwd, (r.w, r.h))?;
+        self.spawn_pane(new_id, cwd, self.pane_size((r.w, r.h)))?;
         self.setup_pane(sid, new_id, None);
         let w = self.sessions[si].active_window_mut();
         w.root = tree;
@@ -731,10 +733,11 @@ impl Server {
     /// Move focus from `origin` in window `wi`; false when there is no pane in that direction.
     pub fn focus_dir_from(&mut self, si: usize, wi: usize, origin: PaneId, dir: Dir) -> bool {
         self.unzoom_window(si, wi);
+        let sp = self.spacing();
         let s = &mut self.sessions[si];
         let size = s.size;
         let w = &mut s.windows[wi];
-        let rects = w.rects(size);
+        let rects = w.rects(size, sp);
         let moved = match neighbor(&rects, origin, dir) {
             Some(n) => {
                 w.focus(n);
@@ -872,8 +875,9 @@ impl Server {
         let dw = self.dock_width(c, s);
         let cols = c.cols;
         if sidebar {
-            let max = cols.saturating_sub(super::MIN_CONTENT + dw).max(4);
-            let w = step(sw).clamp(4, max.min(200));
+            let min = if self.cfg.islands { super::MIN_ISLAND_SIDEBAR } else { 4 };
+            let max = cols.saturating_sub(super::MIN_CONTENT + dw).max(min);
+            let w = step(sw).clamp(min, max.min(200));
             self.sessions[si].sidebar_w = Some(w);
         } else {
             let max = cols.saturating_sub(sw + super::MIN_CONTENT).max(super::MIN_DOCK);
@@ -891,12 +895,13 @@ impl Server {
     fn resize_pane(&mut self, si: usize, dir: Dir, n: u16) {
         let sid = self.sessions[si].id;
         let size = self.sessions[si].size;
+        let sp = self.spacing();
         let w = self.sessions[si].active_window_mut();
         if w.zoomed {
             return;
         }
         let active = w.active;
-        if w.root.resize(active, dir, n, Rect::new(0, 0, size.0, size.1)) {
+        if w.root.resize(active, dir, n, Rect::new(0, 0, size.0, size.1), sp) {
             self.relayout(sid);
         }
     }

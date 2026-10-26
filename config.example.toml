@@ -19,6 +19,8 @@ repeat_time = 1000      # ms after a resize during which plain h/j/k/l (see [key
                         # keep resizing, so you don't need the prefix every time; 0 = off.
                         # Also how long Ctrl-Tab presses keep stepping further back.
 window_focus = "top-left"  # pane focused when you switch to a window: top-left | last
+style = "classic"       # classic | islands (the sidebar, every pane and the dock as
+                        # separate rounded boxes with a gap between them)
 
 [sidebar]
 position = "left"       # left | right

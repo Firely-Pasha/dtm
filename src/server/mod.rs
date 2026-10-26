@@ -39,6 +39,8 @@ use state::{Client, ClientId, Pane, Session, SessionId};
 
 /// Content narrower than this hides the sidebar.
 const MIN_CONTENT: u16 = 20;
+/// Narrowest islands sidebar: two borders, a gap column and a column of text.
+const MIN_ISLAND_SIDEBAR: u16 = 5;
 /// The dock (separator included) is never narrower than this.
 const MIN_DOCK: u16 = 12;
 /// Delay between a state change and the frame being sent.
@@ -416,6 +418,8 @@ impl Server {
     pub fn sidebar_width(&self, c: &Client) -> u16 {
         let set = c.session.and_then(|id| self.sessions.iter().find(|s| s.id == id)).and_then(|s| s.sidebar_w);
         let w = set.unwrap_or(self.cfg.sidebar.width);
+        // An islands sidebar is a box: its borders need room around at least one column of text.
+        let w = if self.cfg.islands { w.max(MIN_ISLAND_SIDEBAR) } else { w };
         if c.sidebar_visible && c.cols >= w + MIN_CONTENT { w } else { 0 }
     }
 
@@ -437,6 +441,25 @@ impl Server {
             .map_or(0, |s| self.dock_width(c, s))
     }
 
+    /// How this server's panes are spaced and sized.
+    pub fn spacing(&self) -> layout::Spacing {
+        if self.cfg.islands { layout::Spacing::ISLANDS } else { layout::Spacing::CLASSIC }
+    }
+
+    /// A pane's text area inside its layout rect: inside the box border in islands style.
+    pub fn pane_area(&self, r: layout::Rect) -> layout::Rect {
+        if !self.cfg.islands {
+            return r;
+        }
+        layout::Rect::new(r.x + 1, r.y + 1, r.w.saturating_sub(2).max(1), r.h.saturating_sub(2).max(1))
+    }
+
+    /// The terminal size of a pane whose layout rect is `w` by `h`.
+    pub fn pane_size(&self, (w, h): (u16, u16)) -> (u16, u16) {
+        let r = self.pane_area(layout::Rect::new(0, 0, w, h));
+        (r.w, r.h)
+    }
+
     pub fn content_size(&self, cid: ClientId) -> (u16, u16) {
         match self.clients.get(&cid) {
             Some(c) => (c.cols - self.sidebar_width(c) - self.client_dock_width(c), c.rows),
@@ -451,11 +474,13 @@ impl Server {
         let dw = self.client_dock_width(c);
         let rows = c.rows;
         let full = (c.cols, c.rows);
+        // Beside the tab row: the separator column, and in islands also the box border.
+        let (cut_w, cut_h) = if self.cfg.islands { (3, 3) } else { (1, 1) };
         let Some(s) = self.sessions.iter_mut().find(|s| s.id == sid) else { return };
         s.size = size;
         s.full_size = full;
         if dw > 0 {
-            s.dock_size = ((dw - 1).max(1), rows.saturating_sub(1).max(1));
+            s.dock_size = (dw.saturating_sub(cut_w).max(1), rows.saturating_sub(cut_h).max(1));
         }
         self.relayout(sid);
     }
@@ -466,9 +491,12 @@ impl Server {
         let mut jobs: Vec<(PaneId, u16, u16)> = s
             .windows
             .iter()
-            .flat_map(|w| w.rects(s.size))
+            .flat_map(|w| w.rects(s.size, self.spacing()))
             .filter(|(_, r)| r.w > 0 && r.h > 0)
-            .map(|(id, r)| (id, r.w, r.h))
+            .map(|(id, r)| {
+                let a = self.pane_area(r);
+                (id, a.w, a.h)
+            })
             .collect();
         if s.dock.visible {
             jobs.extend(s.dock.entries.iter().filter_map(|e| e.pane).map(|p| (p, s.dock_size.0, s.dock_size.1)));
@@ -640,13 +668,15 @@ impl Server {
         self.start_visible_windows();
         self.clamp_sidebar_focus();
         self.sync_maximized();
-        let mut contents: HashMap<SessionId, Canvas> = HashMap::new();
+        let mut contents: HashMap<(SessionId, bool), Canvas> = HashMap::new();
         let mut frames: Vec<(ClientId, Canvas)> = Vec::new();
         for c in self.clients.values() {
             let Some(s) = c.session.and_then(|sid| self.sessions.iter().find(|s| s.id == sid)) else { continue };
-            let content = contents
-                .entry(s.id)
-                .or_insert_with(|| render::render_window(s.active_window(), &self.panes, s.size));
+            // No pane looks focused while the sidebar, the dock or the popup has the keyboard.
+            let focused = c.sidebar_focus.is_none() && !self.extra_focused(s);
+            let content = contents.entry((s.id, focused)).or_insert_with(|| {
+                render::render_window(s.active_window(), &self.panes, s.size, self.cfg.islands, focused)
+            });
             frames.push((c.id, self.compose(c, s, content)));
         }
         for (cid, canvas) in frames {
@@ -787,7 +817,7 @@ impl Server {
             }
             None => None,
         };
-        SidebarView { header, subheader, subtag, items, footer, focused: c.sidebar_focus.is_some() }
+        SidebarView { header, subheader, subtag, items, footer, focused: c.sidebar_focus.is_some(), islands: self.cfg.islands }
     }
 
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {
@@ -812,7 +842,7 @@ impl Server {
         canvas.cursor = content.cursor.filter(|&(x, y)| x < cw && y < rows).map(|(x, y)| (x + content_x, y));
         if dw > 0 {
             let focused = s.dock.focused && s.shown_popup().is_none();
-            let cur = render::draw_dock(&mut canvas, (dock_x, dw), self.cfg.sidebar.position == Position::Left, &s.dock, &self.panes, focused);
+            let cur = render::draw_dock(&mut canvas, (dock_x, dw), self.cfg.sidebar.position == Position::Left, &s.dock, &self.panes, focused, self.cfg.islands);
             if focused {
                 canvas.cursor = cur;
             }
@@ -849,7 +879,8 @@ impl Server {
             } else if s.dock.focused && s.shown_dock_pane().is_some() {
                 Some((format!("{dw} cols"), dock_x, 0, dw, rows))
             } else {
-                w.rects(s.size).into_iter().find(|(id, _)| *id == w.active).map(|(_, r)| {
+                w.rects(s.size, self.spacing()).into_iter().find(|(id, _)| *id == w.active).map(|(_, r)| {
+                    let r = self.pane_area(r);
                     (format!("{}×{}", r.w, r.h), content_x + r.x as usize, r.y as usize, r.w as usize, r.h as usize)
                 })
             };

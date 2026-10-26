@@ -37,6 +37,11 @@ pub fn encode_mouse(m: &MouseEvent, rx: usize, ry: usize, sgr: bool) -> Option<V
     }
 }
 
+/// The first screen row below a dock pane that starts under `top` header rows.
+fn dock_pane_rows_end(pane_rows: usize, top: usize) -> usize {
+    top + 1 + pane_rows
+}
+
 impl Server {
     pub fn handle_mouse(&mut self, cid: ClientId, m: MouseEvent) {
         let Some(c) = self.clients.get(&cid) else { return };
@@ -75,14 +80,14 @@ impl Server {
         if cx >= s.size.0 as usize || cy >= s.size.1 as usize {
             return;
         }
-        let hit = s.active_window().rects(s.size).into_iter().find(|(_, r)| {
+        let hit = s.active_window().rects(s.size, self.spacing()).into_iter().find(|(_, r)| {
             r.w > 0
                 && r.h > 0
                 && (r.x as usize..(r.x + r.w) as usize).contains(&cx)
                 && (r.y as usize..(r.y + r.h) as usize).contains(&cy)
         });
         let Some((pane_id, r)) = hit else { return };
-        let (rx, ry) = (cx - r.x as usize, cy - r.y as usize);
+        let inner = self.pane_area(r);
         if m.kind == MouseKind::Press {
             self.sessions[si].dock.focused = false;
             if self.sessions[si].active_window().active != pane_id {
@@ -91,7 +96,11 @@ impl Server {
                 self.refresh_name(si, wi);
             }
         }
-        self.pane_mouse(pane_id, &m, rx, ry);
+        // Over a box border (islands style) there is nothing to forward to the program.
+        let (ix, iy) = (inner.x as usize, inner.y as usize);
+        if cx >= ix && cy >= iy && cx < ix + inner.w as usize && cy < iy + inner.h as usize {
+            self.pane_mouse(pane_id, &m, cx - ix, cy - iy);
+        }
         self.mark_dirty();
     }
 
@@ -110,16 +119,27 @@ impl Server {
 
     fn dock_mouse(&mut self, si: usize, dock_x: usize, dw: usize, m: MouseEvent) {
         let sep_left = self.cfg.sidebar.position == Position::Left;
-        let px = if sep_left { dock_x + 1 } else { dock_x };
+        let islands = self.cfg.islands;
+        let mut px = if sep_left { dock_x + 1 } else { dock_x };
+        let mut pw = dw - 1;
+        // In islands style the box's border surrounds the tab row and the pane.
+        let top = usize::from(islands);
+        if islands {
+            px += 1;
+            pw = pw.saturating_sub(2);
+        }
         let (x, y) = (m.x as usize, m.y as usize);
-        if x < px || x >= px + dw - 1 {
+        if x < px || x >= px + pw {
             return;
         }
         let dock = &self.sessions[si].dock;
-        if y == 0 {
+        if y < top {
+            return;
+        }
+        if y == top {
             if m.kind == MouseKind::Press && m.button == 0 {
                 let names: Vec<&str> = dock.entries.iter().map(|e| e.name.as_str()).collect();
-                let hit = super::render::dock_tabs(&names, dock.active, dw - 1)
+                let hit = super::render::dock_tabs(&names, dock.active, pw)
                     .into_iter()
                     .find(|&(_, x0, x1)| (px + x0..px + x1).contains(&x))
                     .map(|t| t.0);
@@ -136,7 +156,10 @@ impl Server {
         if m.kind == MouseKind::Press {
             self.sessions[si].dock.focused = true;
         }
-        self.pane_mouse(pane, &m, x - px, y - 1);
+        if y >= dock_pane_rows_end(self.sessions[si].dock_size.1 as usize, top) {
+            return;
+        }
+        self.pane_mouse(pane, &m, x - px, y - top - 1);
         self.mark_dirty();
     }
 
@@ -199,7 +222,7 @@ impl Server {
         };
         let active = lines.iter().position(|&l| l == Line::Row(active_row)).unwrap_or(0);
         let has_footer = self.footer_visible(c);
-        let Some(at) = sidebar::item_at(lines.len(), active, c.rows as usize, has_footer, m.y as usize) else { return };
+        let Some(at) = sidebar::item_at(lines.len(), active, c.rows as usize, has_footer, self.cfg.islands, m.y as usize) else { return };
         let mode = c.sidebar_mode;
         let row = match lines[at] {
             Line::Row(row) => row,

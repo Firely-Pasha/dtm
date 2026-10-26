@@ -234,11 +234,11 @@ impl Server {
         let mut leaves = Vec::new();
         let tree = self.build_tree(&plan, size, &mut leaves);
         let mut rects = Vec::new();
-        tree.layout(Rect::new(0, 0, size.0, size.1), &mut rects);
+        tree.layout(Rect::new(0, 0, size.0, size.1), self.spacing(), &mut rects);
         let mut started: Vec<PaneId> = Vec::new();
         for (id, cwd, _, _) in &leaves {
             let r = rects.iter().find(|(p, _)| p == id).map(|(_, r)| *r).unwrap_or(Rect::new(0, 0, 1, 1));
-            if let Err(e) = self.spawn_pane(*id, Some(cwd.clone()), (r.w, r.h)) {
+            if let Err(e) = self.spawn_pane(*id, Some(cwd.clone()), self.pane_size((r.w, r.h))) {
                 for p in started {
                     self.panes.remove(&p);
                 }

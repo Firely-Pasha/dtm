@@ -51,6 +51,8 @@ pub struct SidebarView {
     pub items: Vec<Item>,
     pub footer: Option<Footer>,
     pub focused: bool,
+    /// Drawn as a rounded box (with the gap column facing the panes) instead of a column.
+    pub islands: bool,
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -81,9 +83,10 @@ fn scroll_offset(active_idx: usize, capacity: usize) -> usize {
 
 const FIRST_ITEM_ROW: usize = 2;
 
-/// Which item is drawn on screen row `row`, given how `draw` lays them out.
-pub fn item_at(items: usize, active_idx: usize, rows: usize, has_footer: bool, row: usize) -> Option<usize> {
-    let capacity = rows.saturating_sub(FIRST_ITEM_ROW + usize::from(has_footer));
+/// Which item is drawn on screen row `row`, given how `draw` lays them out
+/// (`islands`: the box's bottom border takes the last row).
+pub fn item_at(items: usize, active_idx: usize, rows: usize, has_footer: bool, islands: bool, row: usize) -> Option<usize> {
+    let capacity = rows.saturating_sub(FIRST_ITEM_ROW + usize::from(has_footer) + usize::from(islands));
     let idx = scroll_offset(active_idx, capacity) + row.checked_sub(FIRST_ITEM_ROW)?;
     (row < FIRST_ITEM_ROW + capacity && idx < items).then_some(idx)
 }
@@ -105,15 +108,33 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
         Position::Left => (x0 + width - 1, x0),
         Position::Right => (x0, x0 + 1),
     };
-    let text_w = width - 1;
+    let mut text_w = width - 1;
+    let mut text_x = text_x;
+    let bottom = usize::from(view.islands);
     canvas.fill(x0, 0, width, rows, Cell::BLANK);
-    for y in 0..rows {
-        canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: if view.focused { FOCUS_SEP } else { DIM } });
+    if view.islands {
+        // The separator column is the gap; the box takes the rest, borders included.
+        if width < 5 || rows < 3 {
+            return;
+        }
+        let box_x = if position == Position::Left { x0 } else { x0 + 1 };
+        super::render::draw_box(canvas, (box_x, 0, width - 1, rows), if view.focused { FOCUS_SEP } else { DIM });
+        text_x = box_x + 1;
+        text_w = width - 3;
+        // The session's name sits in the top border.
+        let title = format!(" {} ", truncate(&view.header, text_w.saturating_sub(3)));
+        canvas.put_str(box_x + 1, 0, &title, BOLD, text_w);
+    } else {
+        for y in 0..rows {
+            canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: if view.focused { FOCUS_SEP } else { DIM } });
+        }
     }
     if rows == 0 {
         return;
     }
-    canvas.put_str(text_x, 0, &format!(" {}", truncate(&view.header, text_w.saturating_sub(1))), BOLD, text_w);
+    if !view.islands {
+        canvas.put_str(text_x, 0, &format!(" {}", truncate(&view.header, text_w.saturating_sub(1))), BOLD, text_w);
+    }
     if rows > 1 {
         let tag_w = view.subtag.map_or(0, |_| 2);
         let title = truncate(&view.subheader, text_w.saturating_sub(1 + tag_w));
@@ -124,7 +145,7 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
     }
     let footer_rows = usize::from(view.footer.is_some());
     let first = FIRST_ITEM_ROW;
-    let capacity = rows.saturating_sub(first + footer_rows);
+    let capacity = rows.saturating_sub(first + footer_rows + bottom);
     let active_idx = view.items.iter().position(|i| i.active).unwrap_or(0);
     let offset = scroll_offset(active_idx, capacity);
     for (row, item) in view.items.iter().skip(offset).take(capacity).enumerate() {
@@ -159,10 +180,13 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
         }
     }
     if let Some(f) = &view.footer {
-        let y = rows - 1;
+        let y = rows - 1 - bottom;
         let attrs = if f.prompt { REVERSE } else { DIM };
         canvas.fill(text_x, y, text_w, 1, Cell::blank(attrs));
-        canvas.put_str(text_x, y, &format!(" {}", truncate(&f.text, text_w.saturating_sub(1))), attrs, text_w);
+        // The leading space goes first when the text only just fits (a narrow islands box).
+        let lead = if f.text.width() < text_w { " " } else { "" };
+        let room = text_w.saturating_sub(lead.len());
+        canvas.put_str(text_x, y, &format!("{lead}{}", truncate(&f.text, room)), attrs, text_w);
     }
 }
 
@@ -175,7 +199,7 @@ mod tests {
     }
 
     fn view(items: Vec<Item>) -> SidebarView {
-        SidebarView { header: "main".into(), subheader: "windows".into(), subtag: None, items, footer: None, focused: false }
+        SidebarView { header: "main".into(), subheader: "windows".into(), subtag: None, items, footer: None, focused: false, islands: false }
     }
 
     #[test]
@@ -230,12 +254,16 @@ mod tests {
     #[test]
     fn item_at_matches_the_drawn_layout() {
         // 10 items, 6 rows, footer: capacity 3, active last -> items 7..9 shown
-        assert_eq!(item_at(10, 9, 6, true, 2), Some(7));
-        assert_eq!(item_at(10, 9, 6, true, 4), Some(9));
-        assert_eq!(item_at(10, 9, 6, true, 5), None);
-        assert_eq!(item_at(10, 9, 6, true, 1), None);
-        assert_eq!(item_at(2, 0, 10, false, 3), Some(1));
-        assert_eq!(item_at(2, 0, 10, false, 4), None);
+        assert_eq!(item_at(10, 9, 6, true, false, 2), Some(7));
+        assert_eq!(item_at(10, 9, 6, true, false, 4), Some(9));
+        assert_eq!(item_at(10, 9, 6, true, false, 5), None);
+        assert_eq!(item_at(10, 9, 6, true, false, 1), None);
+        assert_eq!(item_at(2, 0, 10, false, false, 3), Some(1));
+        assert_eq!(item_at(2, 0, 10, false, false, 4), None);
+        // islands: the bottom border takes a row
+        assert_eq!(item_at(10, 9, 7, true, true, 2), Some(7));
+        assert_eq!(item_at(10, 9, 7, true, true, 4), Some(9));
+        assert_eq!(item_at(10, 9, 7, true, true, 5), None);
     }
 
     #[test]
@@ -266,6 +294,24 @@ mod tests {
         v.subtag = Some('m');
         draw(&mut c, 0, 14, Position::Left, &v);
         assert_eq!(c.row_text(1), " windows   m │");
+    }
+
+    #[test]
+    fn islands_draw_a_rounded_box_with_the_gap_towards_the_panes() {
+        let mut c = Canvas::new(14, 6);
+        let mut v = view(vec![item("1 vim", "●", false), item("2 sh", "", true)]);
+        v.islands = true;
+        v.footer = Some(Footer { text: "hi".into(), prompt: false });
+        draw(&mut c, 0, 14, Position::Left, &v);
+        assert_eq!(c.row_text(0), "╭ main ─────╮");
+        assert_eq!(c.row_text(1), "│ windows   │");
+        assert_eq!(c.row_text(2), "│ 1 vim   ● │");
+        assert_eq!(c.row_text(3), "│ 2 sh      │");
+        assert_eq!(c.row_text(4), "│ hi        │");
+        assert_eq!(c.row_text(5), "╰───────────╯");
+        let mut c = Canvas::new(14, 4);
+        draw(&mut c, 0, 14, Position::Right, &v);
+        assert_eq!((c.cell(0, 0).ch, c.cell(1, 0).ch, c.cell(13, 0).ch), (' ', '╭', '╮'));
     }
 
     #[test]

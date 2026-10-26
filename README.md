@@ -12,7 +12,8 @@ screen model, the frame differ and the layout engine. There is no `vt100`,
 - **[Projects](#projects)**: describe a session's windows, splits and start commands in
   YAML, open it with `dtm open`, export a running session back to a file.
 - **A [dock](#the-dock)** for session-wide panes (lazygit, a log tail) and a **[popup](#popup)** shell.
-- Maximize, zoom, copy mode, mouse support, recently-used window cycling.
+- Maximize, zoom, copy mode, mouse support, recently-used window cycling, and an optional
+  rounded-box ["islands" style](#islands-style).
 - Seamless `Ctrl-h/j/k/l` movement between panes and [Neovim](#neovim-plugin) splits.
 - Works on Linux and macOS.
 
@@ -316,6 +317,28 @@ windows:
 Actions (bindable in `[keys.prefix]` and `[keys.sidebar]`): `new-group`,
 `sidebar-rename-group`, `sidebar-group-tag`.
 
+## Islands style
+
+`[options] style = "islands"` draws the sidebar, every pane and the dock as separate
+rounded boxes, with a one-cell gap between boxes side by side and none between stacked
+ones; the focused pane's box (and a focused
+sidebar or dock) has a highlighted border. The default is `"classic"`: flat panes
+split by single lines.
+
+```
+╭ work ──────────────╮ ╭────────────────────╮ ╭────────╮
+│ main             g │ │ $ nvim             │ │ logs   │
+│ 1 edit             │ ╰────────────────────╯ │ $      │
+│ 2 test             │ ╭────────────────────╮ │        │
+╰────────────────────╯ │ $                  │ ╰────────╯
+                       ╰────────────────────╯
+```
+
+A box takes one row and column on each side, so a pane (or the sidebar and dock)
+has two fewer columns and rows of text than in the classic style, and `stty size`
+in a pane reports that smaller size. `Ctrl-a m` still makes a pane fill the whole
+terminal without a box, and `dtm reload` switches styles in a running server.
+
 ## Searching windows
 
 `<prefix> f`, or `/` in the focused sidebar, filters the windows by typing
@@ -353,8 +376,8 @@ checked by the test suite to match the built-in defaults.
 - `options.shell` is the program started in new panes (default `$SHELL`, then
   `/bin/sh`). The other `[options]`: `prefix` (default `C-a`), `history_limit`
   (scrollback lines per pane, 10000), `mouse`, `clipboard` (copy also goes to the
-  terminal clipboard), `repeat_time` (ms, 1000), `navigator_apps` and
-  `window_focus` (`"top-left"` or `"last"`).
+  terminal clipboard), `repeat_time` (ms, 1000), `navigator_apps`,
+  `window_focus` (`"top-left"` or `"last"`) and `style` (`"classic"` or `"islands"`).
 - `[sidebar]` sets `position` (`left`/`right`), `width`, `visible`, `default_mode`
   (`windows`/`sessions`) and `follow`; `[popup]` sets `width` and `height`.
 - `[keys.prefix]`, `[keys.root]`, `[keys.copy]`, `[keys.resize]` and

@@ -124,7 +124,7 @@ impl Server {
         let s = &self.sessions[si];
         let w = &s.windows[wi];
         let mut rects = Vec::new();
-        w.root.layout(Rect::new(0, 0, s.size.0, s.size.1), &mut rects);
+        w.root.layout(Rect::new(0, 0, s.size.0, s.size.1), self.spacing(), &mut rects);
         let r = rects.iter().find(|(id, _)| *id == pane).map(|(_, r)| *r).ok_or("pane not in layout")?;
         let ctx = FormatCtx {
             pane_id: pane,
