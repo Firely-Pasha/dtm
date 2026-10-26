@@ -51,7 +51,7 @@ because its code signature no longer matches; re-sign it with
 | `c` | new window | `\|` | split side by side |
 | `n` / `p` | next / previous window | `-` | split stacked |
 | `1`-`9` | window 1-9 of the first group | arrows, `Ctrl-h/j/k/l` | move focus |
-| `,` | rename window | `h j k l` (or `H J K L`) | resize pane by 5 |
+| `,` | rename window | `h j k l` / `H J K L` | resize pane by 1 / by 5 |
 | `&` | kill window | `o` | next pane |
 | `x` | kill pane | `z` | zoom pane |
 | `S` | new session | `$` | rename session |
@@ -79,7 +79,8 @@ the repeat time after it (`options.repeat_time`, 1 second) plain `Tab` goes
 further back, like Alt-Tab, and `Shift-Tab` goes the other way. Any other key
 ends it, and after that `Tab` is the shell's again. A window counts as
 opened when you choose it (`Enter`/`o` in the sidebar, a click, `<prefix> 1`-`9`,
-`n`/`p`, search), not while the sidebar selection merely passes over it.
+`n`/`p`, search), not while the sidebar selection merely passes over it. (`n`/`p` stepping
+onto a project window that has not started only shows it as "Not loaded"; see Projects.)
 `Ctrl-Tab` / `Ctrl-Shift-Tab` do the same without the prefix, but terminals only
 send them when asked to, and most use them for their own tabs: make yours send `ESC [ 9 ; 5 u` (and `ESC [ 9 ; 6 u` for `Ctrl-Shift-Tab`), e.g.
 Ghostty `keybind = ctrl+tab=csi:9;5u`, kitty `map ctrl+tab send_text all \x1b[9;5u`,
@@ -92,7 +93,7 @@ an iTerm2 key mapping "Send Escape Sequence" `[9;5u`. xterm's
 
 **Size indicator**: while you resize (and for the repeat window after it), the middle of the pane shows its size as `columns×rows`, and the sidebar or dock shows its width, so panes in different windows can be lined up.
 
-**Resizing**: while the sidebar or the dock has focus, `<prefix> h` / `l` move its inner edge to resize it, and then plain `h` / `l` keep resizing by one cell for a second, as for panes. Both widths belong to the session (every client and later attach sees them); the dock's is also exported. Otherwise `<prefix> h j k l` resizes the focused pane by 5 cells, then plain `h j k l` keep
+**Resizing**: while the sidebar or the dock has focus, `<prefix> h` / `l` move its inner edge to resize it, and then plain `h` / `l` keep resizing by one cell for a second, as for panes. Both widths belong to the session (every client and later attach sees them); the dock's is also exported. Otherwise `<prefix> h j k l` resizes the focused pane by 1 cell (`H J K L` by 5), then plain `h j k l` keep
 resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
 don't have to press the prefix again for every step. Any other key ends it.
 
@@ -206,8 +207,8 @@ windows:
 - **Lazy start.** Only the first window is created when the project opens; the
   others get their panes and run their commands the first time you open them
   (a `…` marks them in the sidebar; just moving the selection over one shows
-  "Not loaded" and starts nothing; with focus on such a window, `o` or `Enter` loads
-  it). Set `lazy: false` on the file or on a
+  "Not loaded" and starts nothing, and so does stepping onto it with `<prefix> n` /
+  `p`; with focus on such a window, `o` or `Enter` loads it). Set `lazy: false` on the file or on a
   window to start it at once.
 - **Opening.** `dtm` in a directory with a `project.dtm.yaml` opens it.
   `dtm open [FILE|DIR|NAME]` takes a file, a directory holding one, or a saved

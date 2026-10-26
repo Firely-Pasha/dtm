@@ -227,7 +227,13 @@ impl Server {
         let Some(s) = self.sessions.iter().find(|s| s.id == sid) else { return };
         let n = s.windows.len();
         let wi = if forward { (s.active + 1) % n } else { (s.active + n - 1) % n };
-        self.open_window(sid, wi);
+        // Stepping past a window that has not started shows it as "Not loaded" without
+        // starting it (`o` or Enter does); it is not opened, so it stays out of the recent list.
+        if s.windows[wi].pending {
+            self.select_window(sid, wi);
+        } else {
+            self.open_window(sid, wi);
+        }
     }
 
     /// Ctrl-Tab: the next window back in the order they were opened. Presses within the

@@ -149,10 +149,10 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("Right", "focus-right"),
     ("Up", "focus-up"),
     ("Down", "focus-down"),
-    ("h", "resize-left 5"),
-    ("l", "resize-right 5"),
-    ("k", "resize-up 5"),
-    ("j", "resize-down 5"),
+    ("h", "resize-left 1"),
+    ("l", "resize-right 1"),
+    ("k", "resize-up 1"),
+    ("j", "resize-down 1"),
     ("H", "resize-left 5"),
     ("L", "resize-right 5"),
     ("K", "resize-up 5"),
@@ -541,10 +541,13 @@ mod tests {
     #[test]
     fn prefix_hjkl_resize_and_arrows_focus() {
         let d = Config::default();
-        assert_eq!(d.prefix_keys[&(Key::Char('h'), 0)], Action::Resize(Dir::Left, 5));
-        assert_eq!(d.prefix_keys[&(Key::Char('j'), 0)], Action::Resize(Dir::Down, 5));
-        assert_eq!(d.prefix_keys[&(Key::Char('k'), 0)], Action::Resize(Dir::Up, 5));
-        assert_eq!(d.prefix_keys[&(Key::Char('l'), 0)], Action::Resize(Dir::Right, 5));
+        // lowercase resizes by one cell, capitals by five
+        assert_eq!(d.prefix_keys[&(Key::Char('h'), 0)], Action::Resize(Dir::Left, 1));
+        assert_eq!(d.prefix_keys[&(Key::Char('j'), 0)], Action::Resize(Dir::Down, 1));
+        assert_eq!(d.prefix_keys[&(Key::Char('k'), 0)], Action::Resize(Dir::Up, 1));
+        assert_eq!(d.prefix_keys[&(Key::Char('l'), 0)], Action::Resize(Dir::Right, 1));
+        assert_eq!(d.prefix_keys[&(Key::Char('H'), 0)], Action::Resize(Dir::Left, 5));
+        assert_eq!(d.prefix_keys[&(Key::Char('J'), 0)], Action::Resize(Dir::Down, 5));
         assert_eq!(d.prefix_keys[&(Key::Left, 0)], Action::Focus(Dir::Left));
         assert_eq!(d.prefix_keys[&(Key::Down, 0)], Action::Focus(Dir::Down));
         assert_eq!(d.prefix_keys[&(Key::Char('o'), 0)], Action::FocusNext);

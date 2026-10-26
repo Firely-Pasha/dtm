@@ -957,7 +957,8 @@ async fn prefix_hjkl_resize_while_arrows_move_focus() {
     // prefix h moves the border left: the focused (right) pane grows, and keeps the focus
     h.send(&format!("{CTRL_A}h"));
     h.send("stty size\r");
-    h.wait_for("wider", |t| last_size(t, 30).is_some_and(|c| c > start)).await;
+    // the first step is one cell, like the repeated ones; capitals take five
+    h.wait_for("one cell wider", |t| last_size(t, 30).is_some_and(|c| c == start + 1)).await;
     assert!(right_pane_text(&h).matches("30 ").count() >= 2, "still typing in the right pane");
 
     // the arrow keys move focus
@@ -1424,14 +1425,14 @@ async fn prefix_h_l_resize_the_focused_sidebar_and_dock() {
     // Sidebar on the left: l grows it, h shrinks it.
     h.send(&format!("{CTRL_A}w"));
     h.wait_text(SIDEBAR_HINT).await;
-    h.send(&format!("{CTRL_A}l"));
+    h.send(&format!("{CTRL_A}L"));
     h.wait_cell(28, 5, '│').await;
     // Like the dock, plain h/l keep resizing by one cell for a moment.
     h.send("l");
     h.wait_cell(29, 5, '│').await;
     h.send("h");
     h.wait_cell(28, 5, '│').await;
-    h.send(&format!("{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}H"));
     h.wait_cell(23, 5, '│').await;
     h.send("q");
     h.wait_for("sidebar left", |t| !t.contains(SIDEBAR_HINT)).await;
@@ -1439,9 +1440,9 @@ async fn prefix_h_l_resize_the_focused_sidebar_and_dock() {
     // Dock on the right: h grows it, l shrinks it.
     h.send("\x0c");
     h.wait_cursor("in the dock", |x, _| x > 72).await;
-    h.send(&format!("{CTRL_A}h"));
+    h.send(&format!("{CTRL_A}H"));
     h.wait_cell(67, 5, '│').await;
-    h.send(&format!("{CTRL_A}l"));
+    h.send(&format!("{CTRL_A}L"));
     h.wait_cell(72, 5, '│').await;
 }
 
@@ -1452,7 +1453,7 @@ async fn sidebar_width_is_kept_by_the_session() {
     h.wait_text("1 sh").await;
     h.send(&format!("{CTRL_A}w"));
     h.wait_text(SIDEBAR_HINT).await;
-    h.send(&format!("{CTRL_A}l"));
+    h.send(&format!("{CTRL_A}L"));
     h.wait_cell(28, 5, '│').await;
     h.send("n");
     h.wait_text("2 sh").await;
@@ -1474,7 +1475,7 @@ async fn project_sidebar_width_is_applied_and_exported_and_o_opens() {
     h.wait_cell(29, 5, '│').await;
     h.send(&format!("{CTRL_A}w"));
     h.wait_text(SIDEBAR_HINT).await;
-    h.send(&format!("{CTRL_A}l"));
+    h.send(&format!("{CTRL_A}L"));
     h.wait_cell(34, 5, '│').await;
     h.send("j");
     h.wait_for("window 2 shown", |t| t.contains("2 b")).await;
@@ -1501,7 +1502,7 @@ async fn resizing_shows_the_size_until_the_repeat_window_ends() {
 
     // The sidebar shows its width in columns.
     h.send(&format!("{CTRL_A}w"));
-    h.send(&format!("{CTRL_A}l"));
+    h.send(&format!("{CTRL_A}L"));
     h.wait_for("sidebar badge", |t| t.contains("29 cols")).await;
     h.wait_for("sidebar badge gone", |t| !t.contains("29 cols")).await;
 }
@@ -1702,9 +1703,9 @@ async fn maximize_fills_the_terminal_with_a_pane_dock_pane_popup_or_sidebar() {
 
     // the popup
     h.send(&format!("{CTRL_A}P"));
-    h.wait_for("popup border", |t| t.contains('┌')).await;
+    h.wait_for("popup border", |t| t.contains('╭') && t.contains('╯')).await;
     h.send(&format!("{CTRL_A}m"));
-    h.wait_for("popup border gone", |t| !t.contains('┌') && !t.contains("1 sh")).await;
+    h.wait_for("popup border gone", |t| !t.contains('╭') && !t.contains("1 sh")).await;
     h.send("echo POPCOLS$(tput cols)\r");
     h.wait_text("POPCOLS120").await;
     h.send(&format!("{CTRL_A}x"));
@@ -2024,4 +2025,54 @@ async fn islands_is_the_default_style() {
     h.wait_for("boxes", |t| t.lines().next().is_some_and(|l| l.starts_with('╭') && l.contains("╮ ╭"))).await;
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn a_prompt_takes_the_focus_from_everything_behind_it() {
+    use dtm::term::cell::Color;
+    let env = Env::new("prompt-focus", "[options]\nstyle = \"islands\"\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    assert_eq!(h.screen.cell(24, 0).attrs.fg, Color::Idx(2), "the pane is focused");
+    h.send(&format!("{CTRL_A},"));
+    h.wait_text("rename window").await;
+    h.wait_screen("pane unfocused", |s| s.cell(24, 0).attrs.fg == Color::Idx(8)).await;
+    h.send("\x1b");
+    h.wait_screen("pane focused again", |s| s.cell(24, 0).attrs.fg == Color::Idx(2)).await;
+
+    // from the focused sidebar: its border and selection let go too
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    assert_eq!(h.screen.cell(0, 1).attrs.fg, Color::Idx(2), "the focused sidebar's border");
+    h.send("r");
+    h.wait_text("rename window").await;
+    h.wait_screen("sidebar unfocused", |s| s.cell(0, 1).attrs.fg == Color::Idx(8)).await;
+    assert_ne!(h.screen.cell(0, 2).ch, '›', "{}", h.text());
+    h.send("\x1b");
+    h.wait_screen("sidebar focused again", |s| s.cell(0, 1).attrs.fg == Color::Idx(2)).await;
+}
+
+#[tokio::test]
+async fn prefix_n_and_p_do_not_load_windows_that_have_not_started() {
+    let env = Env::new("np-lazy", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: np\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n  - name: three\n    command: echo THREE$((1+2))\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("ONE1").await;
+    h.send(&format!("{CTRL_A}n"));
+    h.wait_text("Not loaded").await;
+    h.send(&format!("{CTRL_A}n"));
+    h.wait_text("Not loaded").await;
+    h.send(&format!("{CTRL_A}p"));
+    h.send(&format!("{CTRL_A}p"));
+    h.wait_text("ONE1").await;
+    // nothing started in between; `o` loads a window once it is shown
+    h.send(&format!("{CTRL_A}n"));
+    h.wait_text("Not loaded").await;
+    h.send("o");
+    h.wait_text("TWO2").await;
+    assert!(!h.text().contains("THREE3"), "{}", h.text());
 }

@@ -673,7 +673,8 @@ impl Server {
         for c in self.clients.values() {
             let Some(s) = c.session.and_then(|sid| self.sessions.iter().find(|s| s.id == sid)) else { continue };
             // No pane looks focused while the sidebar, the dock or the popup has the keyboard.
-            let focused = c.sidebar_focus.is_none() && !self.extra_focused(s);
+            // (A prompt takes the focus itself.)
+            let focused = c.sidebar_focus.is_none() && !self.extra_focused(s) && c.prompt.is_none();
             let content = contents.entry((s.id, focused)).or_insert_with(|| {
                 render::render_window(s.active_window(), &self.panes, s.size, self.cfg.islands, focused)
             });
@@ -739,6 +740,8 @@ impl Server {
     }
 
     fn sidebar_view(&self, c: &Client, s: &Session) -> SidebarView {
+        // While a prompt is up, it has the focus, not the sidebar behind it.
+        let sidebar_focused = c.sidebar_focus.is_some() && c.prompt.is_none();
         let mut subtag = None;
         let (header, subheader, items) = match c.sidebar_mode {
             SidebarMode::Windows => {
@@ -771,7 +774,7 @@ impl Server {
                             marks.push('…');
                         }
                         let label = Self::window_label(s, i, false);
-                        Item { label, marks, active: i == s.active, selected: c.sidebar_focus == Some(row), heading: false }
+                        Item { label, marks, active: i == s.active, selected: sidebar_focused && c.sidebar_focus == Some(row), heading: false }
                     })
                     .collect();
                 let sub = match &c.search {
@@ -801,7 +804,7 @@ impl Server {
                             label: format!("{} {}", i + 1, o.name),
                             marks: format!("{}w{}", o.windows.len(), if elsewhere { "*" } else { "" }),
                             active: o.id == s.id,
-                            selected: c.sidebar_focus == Some(i),
+                            selected: sidebar_focused && c.sidebar_focus == Some(i),
                             heading: false,
                         }
                     })
@@ -817,7 +820,7 @@ impl Server {
             }
             None => None,
         };
-        SidebarView { header, subheader, subtag, items, footer, focused: c.sidebar_focus.is_some(), islands: self.cfg.islands }
+        SidebarView { header, subheader, subtag, items, footer, focused: sidebar_focused, islands: self.cfg.islands }
     }
 
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {
@@ -841,7 +844,7 @@ impl Server {
         canvas.mouse = self.cfg.mouse;
         canvas.cursor = content.cursor.filter(|&(x, y)| x < cw && y < rows).map(|(x, y)| (x + content_x, y));
         if dw > 0 {
-            let focused = s.dock.focused && s.shown_popup().is_none();
+            let focused = s.dock.focused && s.shown_popup().is_none() && c.prompt.is_none();
             let cur = render::draw_dock(&mut canvas, (dock_x, dw), self.cfg.sidebar.position == Position::Left, &s.dock, &self.panes, focused, self.cfg.islands);
             if focused {
                 canvas.cursor = cur;
@@ -849,7 +852,7 @@ impl Server {
         }
         if s.shown_popup().is_some() {
             let pane = s.popup.and_then(|p| self.panes.get(&p));
-            canvas.cursor = render::draw_popup(&mut canvas, content_x, self.popup_outer(s.size), pane);
+            canvas.cursor = render::draw_popup(&mut canvas, content_x, self.popup_outer(s.size), pane, c.prompt.is_none());
         }
         if self.extra_focused(s)
             && let Some(p) = self.focused_pane_in(s).and_then(|id| self.panes.get(&id))

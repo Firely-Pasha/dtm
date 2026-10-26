@@ -240,30 +240,19 @@ pub fn draw_dock(
     }
 }
 
-/// Draw the popup box at `ox + outer`; returns the cursor.
-pub fn draw_popup(canvas: &mut Canvas, ox: usize, outer: Rect, pane: Option<&Pane>) -> Option<(usize, usize)> {
+/// Draw the popup box at `ox + outer`; returns the cursor (`focused` is false behind a prompt).
+pub fn draw_popup(canvas: &mut Canvas, ox: usize, outer: Rect, pane: Option<&Pane>, focused: bool) -> Option<(usize, usize)> {
     let (x, y, w, h) = (ox + outer.x as usize, outer.y as usize, outer.w as usize, outer.h as usize);
     if w < 3 || h < 3 {
         return None;
     }
-    let edge = |ch| Cell { ch, width: 1, attrs: BORDER_ACTIVE };
     canvas.fill(x, y, w, h, Cell::BLANK);
-    for dx in 1..w - 1 {
-        canvas.set(x + dx, y, edge('─'));
-        canvas.set(x + dx, y + h - 1, edge('─'));
-    }
-    for dy in 1..h - 1 {
-        canvas.set(x, y + dy, edge('│'));
-        canvas.set(x + w - 1, y + dy, edge('│'));
-    }
-    canvas.set(x, y, edge('┌'));
-    canvas.set(x + w - 1, y, edge('┐'));
-    canvas.set(x, y + h - 1, edge('└'));
-    canvas.set(x + w - 1, y + h - 1, edge('┘'));
+    let border = border_attrs(focused);
+    draw_box(canvas, (x, y, w, h), border);
     if w > 12 {
-        canvas.put_str(x + 2, y, " popup ", BORDER_ACTIVE, w - 4);
+        canvas.put_str(x + 2, y, " popup ", border, w - 4);
     }
-    draw_pane_view(canvas, pane?, (x + 1, y + 1, w - 2, h - 2), true)
+    draw_pane_view(canvas, pane?, (x + 1, y + 1, w - 2, h - 2), focused)
 }
 
 /// A small label in the middle of `area` (x, y, w, h), e.g. the size of a pane being resized.
