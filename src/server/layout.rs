@@ -26,6 +26,15 @@ impl Rect {
     }
 }
 
+/// A split's border found under the mouse: see [`Node::hit_border`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BorderHit {
+    pub path: Vec<bool>,
+    pub axis: Axis,
+    /// The area the split divides.
+    pub rect: Rect,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
     /// Children sit side by side, separated by a vertical border.
@@ -47,13 +56,16 @@ pub struct Spacing {
     pub row_gap: u16,
     /// Smallest size a pane can be shrunk to by resizing.
     pub min_pane: u16,
+    /// Cells on each side of the separation that count as the border when grabbing it with the
+    /// mouse (a box has its own border cells next to the gap).
+    pub grab: u16,
 }
 
 impl Spacing {
     /// Panes split by single lines.
-    pub const CLASSIC: Spacing = Spacing { row_gap: 1, min_pane: 2 };
+    pub const CLASSIC: Spacing = Spacing { row_gap: 1, min_pane: 2, grab: 0 };
     /// Every pane is a box of its own: boxes sit directly on top of each other.
-    pub const ISLANDS: Spacing = Spacing { row_gap: 0, min_pane: 3 };
+    pub const ISLANDS: Spacing = Spacing { row_gap: 0, min_pane: 3, grab: 1 };
 
     fn gap(&self, axis: Axis) -> u16 {
         match axis {
@@ -176,6 +188,58 @@ impl Node {
                 }
             }
         }
+    }
+
+    /// The split whose border holds (`x`, `y`): the cells between its two children, widened by
+    /// `sp.grab` towards each side. Gives the path to it (`false` = first child), its axis and rect.
+    /// A deeper split wins over the widened zone of an outer one, so only exact gaps beat it.
+    pub fn hit_border(&self, rect: Rect, sp: Spacing, x: u16, y: u16) -> Option<BorderHit> {
+        let Node::Split { axis, ratio, a, b } = self else { return None };
+        if x < rect.x || y < rect.y || x >= rect.right() || y >= rect.bottom() {
+            return None;
+        }
+        let (ra, rb) = split_rect(*axis, *ratio, rect, sp);
+        if rb.w == 0 || rb.h == 0 {
+            return None;
+        }
+        let (pos, gap_from, gap_to) = match axis {
+            Axis::Cols => (x, ra.right(), rb.x),
+            Axis::Rows => (y, ra.bottom(), rb.y),
+        };
+        let here = BorderHit { path: Vec::new(), axis: *axis, rect };
+        if (gap_from..gap_to).contains(&pos) {
+            return Some(here);
+        }
+        for (second, child, r) in [(false, a, ra), (true, b, rb)] {
+            if let Some(mut hit) = child.hit_border(r, sp, x, y) {
+                hit.path.insert(0, second);
+                return Some(hit);
+            }
+        }
+        // Next to the gap: a box's own border cells.
+        let (from, to) = (gap_from.saturating_sub(sp.grab), gap_to + sp.grab);
+        (from..to).contains(&pos).then_some(here)
+    }
+
+    /// Move the border of the split at `path` so the first child is `first_len` cells long.
+    pub fn set_first_len(&mut self, path: &[bool], first_len: u16, rect: Rect, sp: Spacing) -> bool {
+        let Node::Split { axis, ratio, a, b } = self else { return false };
+        if let Some((&second, rest)) = path.split_first() {
+            let (ra, rb) = split_rect(*axis, *ratio, rect, sp);
+            return if second { b.set_first_len(rest, first_len, rb, sp) } else { a.set_first_len(rest, first_len, ra, sp) };
+        }
+        let total = match axis {
+            Axis::Cols => rect.w,
+            Axis::Rows => rect.h,
+        };
+        let gap = sp.gap(*axis);
+        if total < 2 * sp.min_pane + gap {
+            return false;
+        }
+        let avail = (total - gap) as f32;
+        let min = sp.min_pane as f32 / avail;
+        *ratio = (first_len as f32 / avail).clamp(min, 1.0 - min);
+        true
     }
 
     pub fn layout(&self, rect: Rect, sp: Spacing, out: &mut Vec<(PaneId, Rect)>) {
@@ -353,4 +417,55 @@ mod tests {
         assert_eq!(v[1].1.h, 3, "{v:?}");
         assert!(!t.resize(1, Dir::Down, 1, Rect::new(0, 0, 20, 5), Spacing::ISLANDS), "too small to move");
     }
+
+    #[test]
+    fn hit_border_finds_gaps_and_nested_splits() {
+        let t = tree();
+        let area = Rect::new(0, 0, 21, 10);
+        let sp = Spacing::CLASSIC;
+        let hit = |x, y| t.hit_border(area, sp, x, y);
+        assert_eq!(hit(10, 3), Some(BorderHit { path: vec![], axis: Axis::Cols, rect: area }));
+        assert_eq!(hit(15, 5), Some(BorderHit { path: vec![true], axis: Axis::Rows, rect: Rect::new(11, 0, 10, 10) }));
+        assert_eq!(hit(3, 5), None, "inside a pane");
+        assert_eq!(hit(15, 2), None);
+        assert_eq!(hit(40, 2), None, "outside the area");
+        assert_eq!(Node::Leaf(1).hit_border(area, sp, 1, 1), None);
+    }
+
+    #[test]
+    fn hit_border_in_islands_includes_the_boxes_own_border_cells() {
+        let t = tree();
+        let area = Rect::new(0, 0, 21, 10);
+        let sp = Spacing::ISLANDS;
+        let hit = |x, y| t.hit_border(area, sp, x, y).map(|h| (h.path, h.axis));
+        // the gap column, and the border columns of the boxes on either side of it
+        assert_eq!(hit(10, 3), Some((vec![], Axis::Cols)));
+        assert_eq!(hit(9, 3), Some((vec![], Axis::Cols)));
+        assert_eq!(hit(11, 2), Some((vec![], Axis::Cols)));
+        // the seam between the stacked boxes: the bottom border of 2 and the top border of 3
+        assert_eq!(hit(15, 4), Some((vec![true], Axis::Rows)));
+        assert_eq!(hit(15, 5), Some((vec![true], Axis::Rows)));
+        assert_eq!(hit(15, 2), None, "inside a box");
+        assert_eq!(hit(5, 5), None);
+    }
+
+    #[test]
+    fn set_first_len_moves_a_border_within_the_limits() {
+        let mut t = tree();
+        let area = Rect::new(0, 0, 21, 10);
+        let first = |t: &Node| rects(t, 21, 10)[0].1.w;
+        assert!(t.set_first_len(&[], 5, area, Spacing::CLASSIC));
+        assert_eq!(first(&t), 5);
+        t.set_first_len(&[], 0, area, Spacing::CLASSIC);
+        assert_eq!(first(&t), 2, "never below the minimum");
+        t.set_first_len(&[], 100, area, Spacing::CLASSIC);
+        assert_eq!(rects(&t, 21, 10)[1].1.w, 2, "nor leaving the other side below it");
+        // a nested split
+        let mut t = tree();
+        assert!(t.set_first_len(&[true], 7, Rect::new(11, 0, 10, 10), Spacing::CLASSIC));
+        let r = rects(&t, 21, 10);
+        assert_eq!((r[1].1.h, r[2].1.y), (7, 8));
+        assert!(!Node::Leaf(1).set_first_len(&[], 3, area, Spacing::CLASSIC));
+    }
 }
+

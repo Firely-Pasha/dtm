@@ -53,6 +53,20 @@ pub enum CopyCmd {
     Select,
     /// Select whole lines (switches an existing selection to line mode).
     SelectLine,
+    /// Select a rectangle of columns.
+    SelectRect,
+    /// Search forward / backward (asks for the text), and repeat the last search.
+    SearchForward,
+    SearchBackward,
+    SearchNext,
+    SearchPrev,
+    /// Word motions, and the top / middle / bottom row of the view.
+    WordNext,
+    WordPrev,
+    WordEnd,
+    ViewTop,
+    ViewMiddle,
+    ViewBottom,
     /// Copy the selection (or current line) and leave copy mode.
     Yank,
     Cancel,
@@ -71,6 +85,12 @@ pub enum Action {
     RenameWindow,
     /// Ask for a name and start a group with a new window in it.
     NewGroup,
+    /// Close the shown session (asks first).
+    KillSession,
+    /// Ask for a command (an action name or one of the `dtm run` commands) and run it.
+    CommandPrompt,
+    /// A list of the key bindings.
+    Help,
     SplitVertical,
     SplitHorizontal,
     Focus(Dir),
@@ -124,10 +144,57 @@ pub enum Action {
     DockRename,
 }
 
+/// Every name `Action::from_str` accepts (the ones that take a number are listed bare).
+pub const ACTION_NAMES: &[&str] = &[
+    "command-prompt", "copy-bottom", "copy-cancel", "copy-down", "copy-half-page-down", "copy-half-page-up",
+    "copy-left", "copy-line-end", "copy-line-start", "copy-mode", "copy-page-down", "copy-page-up",
+    "copy-right", "copy-search-backward", "copy-search-forward", "copy-search-next", "copy-search-prev",
+    "copy-select", "copy-select-line", "copy-select-rect", "copy-top", "copy-up", "copy-view-bottom",
+    "copy-view-middle", "copy-view-top", "copy-word-end", "copy-word-next", "copy-word-prev", "copy-yank",
+    "detach", "dock-add", "dock-close", "dock-next", "dock-prev", "dock-rename", "export-project",
+    "focus-dock", "focus-down", "focus-last", "focus-left", "focus-next", "focus-right", "focus-sidebar",
+    "focus-up", "help", "kill-pane", "kill-session", "kill-window", "navigate-down", "navigate-last",
+    "navigate-left", "navigate-right", "navigate-up", "new-group", "new-session", "new-window",
+    "next-session", "next-window", "paste-buffer", "prev-session", "prev-window", "recent-window",
+    "recent-window-reverse", "reload-config", "rename-session", "rename-window", "resize-down", "resize-left",
+    "resize-right", "resize-up", "respawn-pane", "respawn-window", "search-windows", "select-session",
+    "select-window", "send-key", "send-prefix", "sidebar-down", "sidebar-export", "sidebar-group-tag",
+    "sidebar-kill", "sidebar-leave", "sidebar-move-down", "sidebar-move-up", "sidebar-new", "sidebar-open",
+    "sidebar-rename", "sidebar-rename-group", "sidebar-respawn", "sidebar-search", "sidebar-up",
+    "split-horizontal", "split-vertical", "toggle-dock", "toggle-maximize", "toggle-popup", "toggle-sidebar",
+    "toggle-sidebar-mode", "zoom-pane",
+];
+
 fn number<T: FromStr>(arg: Option<&str>, name: &str) -> Result<T, String> {
     arg.ok_or_else(|| format!("{name} needs a number"))?
         .parse()
         .map_err(|_| format!("{name}: invalid number"))
+}
+
+impl std::fmt::Display for Dir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Dir::Left => "left",
+            Dir::Right => "right",
+            Dir::Up => "up",
+            Dir::Down => "down",
+        })
+    }
+}
+
+/// The text `Action::from_str` reads back: `select-window 3`, `resize-left 5`, `toggle-maximize`.
+impl std::fmt::Display for Action {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Action::SelectWindow(n) => write!(f, "select-window {n}"),
+            Action::SelectSession(n) => write!(f, "select-session {n}"),
+            Action::Resize(dir, n) => write!(f, "resize-{dir} {n}"),
+            _ => match ACTION_NAMES.iter().find(|n| n.parse::<Action>().as_ref() == Ok(self)) {
+                Some(name) => f.write_str(name),
+                None => write!(f, "{self:?}"),
+            },
+        }
+    }
 }
 
 impl FromStr for Action {
@@ -162,6 +229,9 @@ impl FromStr for Action {
             }
             "rename-window" => no_arg(Action::RenameWindow),
             "new-group" => no_arg(Action::NewGroup),
+            "kill-session" => no_arg(Action::KillSession),
+            "command-prompt" => no_arg(Action::CommandPrompt),
+            "help" => no_arg(Action::Help),
             "split-vertical" => no_arg(Action::SplitVertical),
             "split-horizontal" => no_arg(Action::SplitHorizontal),
             "focus-left" => no_arg(Action::Focus(Dir::Left)),
@@ -204,6 +274,17 @@ impl FromStr for Action {
             "copy-line-end" => no_arg(Action::Copy(CopyCmd::LineEnd)),
             "copy-select" => no_arg(Action::Copy(CopyCmd::Select)),
             "copy-select-line" => no_arg(Action::Copy(CopyCmd::SelectLine)),
+            "copy-select-rect" => no_arg(Action::Copy(CopyCmd::SelectRect)),
+            "copy-search-forward" => no_arg(Action::Copy(CopyCmd::SearchForward)),
+            "copy-search-backward" => no_arg(Action::Copy(CopyCmd::SearchBackward)),
+            "copy-search-next" => no_arg(Action::Copy(CopyCmd::SearchNext)),
+            "copy-search-prev" => no_arg(Action::Copy(CopyCmd::SearchPrev)),
+            "copy-word-next" => no_arg(Action::Copy(CopyCmd::WordNext)),
+            "copy-word-prev" => no_arg(Action::Copy(CopyCmd::WordPrev)),
+            "copy-word-end" => no_arg(Action::Copy(CopyCmd::WordEnd)),
+            "copy-view-top" => no_arg(Action::Copy(CopyCmd::ViewTop)),
+            "copy-view-middle" => no_arg(Action::Copy(CopyCmd::ViewMiddle)),
+            "copy-view-bottom" => no_arg(Action::Copy(CopyCmd::ViewBottom)),
             "focus-sidebar" => no_arg(Action::FocusSidebar),
             "focus-last" => no_arg(Action::FocusLast),
             "navigate-left" => no_arg(Action::Navigate(Dir::Left)),
@@ -261,6 +342,10 @@ mod tests {
         assert_eq!("copy-half-page-up".parse(), Ok(Action::Copy(CopyCmd::HalfPageUp)));
         assert_eq!("paste-buffer".parse(), Ok(Action::PasteBuffer));
         assert_eq!("copy-select-line".parse(), Ok(Action::Copy(CopyCmd::SelectLine)));
+        assert_eq!("copy-select-rect".parse(), Ok(Action::Copy(CopyCmd::SelectRect)));
+        assert_eq!("copy-search-forward".parse(), Ok(Action::Copy(CopyCmd::SearchForward)));
+        assert_eq!("copy-word-end".parse(), Ok(Action::Copy(CopyCmd::WordEnd)));
+        assert_eq!("copy-view-middle".parse(), Ok(Action::Copy(CopyCmd::ViewMiddle)));
         assert_eq!("focus-sidebar".parse(), Ok(Action::FocusSidebar));
         assert_eq!("navigate-left".parse(), Ok(Action::Navigate(Dir::Left)));
         assert_eq!("navigate-down".parse(), Ok(Action::Navigate(Dir::Down)));
@@ -293,4 +378,48 @@ mod tests {
         assert!("detach now".parse::<Action>().is_err());
         assert!("resize-left 1 2".parse::<Action>().is_err());
     }
+
+    /// The names `from_str` matches, read from this file, so the list cannot fall behind.
+    fn names_in_source() -> Vec<String> {
+        let src = include_str!("action.rs");
+        let body = &src[src.find("fn from_str(s: &str)").unwrap()..src.find("#[cfg(test)]").unwrap()];
+        body.lines()
+            .filter_map(|l| {
+                let l = l.trim_start();
+                let rest = l.strip_prefix('"')?;
+                let (name, after) = rest.split_once('"')?;
+                after.trim_start().starts_with("=>").then(|| name.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn action_names_lists_every_action_once() {
+        let mut in_source = names_in_source();
+        in_source.sort();
+        let mut listed: Vec<String> = ACTION_NAMES.iter().map(|s| s.to_string()).collect();
+        let sorted = listed.clone();
+        listed.sort();
+        assert_eq!(listed, sorted, "ACTION_NAMES is sorted");
+        listed.dedup();
+        assert_eq!(listed, in_source);
+    }
+
+    #[test]
+    fn every_action_displays_as_text_that_parses_back() {
+        for name in ACTION_NAMES {
+            for line in [name.to_string(), format!("{name} 2")] {
+                if let Ok(a) = line.parse::<Action>() {
+                    assert_eq!(a.to_string().parse::<Action>(), Ok(a.clone()), "{line} -> {a}");
+                }
+            }
+        }
+        assert_eq!(Action::Resize(Dir::Left, 5).to_string(), "resize-left 5");
+        assert_eq!(Action::SelectWindow(3).to_string(), "select-window 3");
+        assert_eq!(Action::Copy(CopyCmd::Yank).to_string(), "copy-yank");
+        assert_eq!(Action::Sidebar(SidebarCmd::MoveUp).to_string(), "sidebar-move-up");
+        assert_eq!(Action::RecentWindow(false).to_string(), "recent-window-reverse");
+        assert_eq!(Action::Help.to_string(), "help");
+    }
 }
+

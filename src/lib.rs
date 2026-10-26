@@ -1,5 +1,6 @@
 pub mod action;
 pub mod client;
+pub mod command;
 pub mod config;
 pub mod debug;
 pub mod keys;
@@ -11,5 +12,6 @@ pub mod protocol;
 pub mod pty;
 pub mod server;
 pub mod sysproc;
+pub mod theme;
 pub mod term;
 pub mod tty;

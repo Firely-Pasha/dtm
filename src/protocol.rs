@@ -47,6 +47,9 @@ pub enum ClientMsg {
     SelectPane { pane: u32, dir: PaneDir },
     /// Expand a `#{...}` format for `pane`.
     Query { pane: u32, format: String },
+    /// Run a command line (see `crate::command`) in a session: the named one, else the one
+    /// `pane` is in, else the only one.
+    Command { session: Option<String>, pane: Option<u32>, line: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

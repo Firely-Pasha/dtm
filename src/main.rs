@@ -6,6 +6,9 @@ use dtm::{client, config::Config, paths, server};
 #[derive(Parser)]
 #[command(name = "dtm", version, about = "A terminal multiplexer")]
 struct Cli {
+    /// The session the command runs in (default: the one this pane is in, or the only one).
+    #[arg(long, global = true, value_name = "NAME")]
+    session: Option<String>,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -42,6 +45,34 @@ enum Cmd {
         /// Session to export (default: the one this pane belongs to).
         #[arg(short = 't', long)]
         session: Option<String>,
+    },
+    /// Run a command line in a session: any action (`toggle-maximize`) or a command such as `new-window -c DIR`.
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    Run {
+        #[arg(required = true, value_name = "COMMAND")]
+        words: Vec<String>,
+    },
+    /// Open a window: [-c DIR] [-n NAME] [COMMAND]
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    NewWindow {
+        #[arg(value_name = "ARGS")]
+        words: Vec<String>,
+    },
+    /// Split the shown pane: [-h] [-v] [-c DIR] [COMMAND]  (-h: side by side)
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    SplitWindow {
+        #[arg(value_name = "ARGS")]
+        words: Vec<String>,
+    },
+    /// Type keys or text into a pane: [-l] [-t PANE] KEY|TEXT...  (`Enter`, `C-c`, `Up`, ...)
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    SendKeys {
+        #[arg(required = true, value_name = "KEYS")]
+        words: Vec<String>,
+    },
+    /// Close a session and its panes.
+    KillSession {
+        name: String,
     },
     /// Terminate the server and every session.
     KillServer,
@@ -107,6 +138,13 @@ async fn run_server() -> Result<()> {
     server::run(paths::socket_path(), cfg, Some(cfg_path)).await
 }
 
+/// `name` followed by `words`, quoted so the server splits them back into the same words.
+fn command_line(name: &str, words: &[String]) -> String {
+    let mut all = vec![name.to_string()];
+    all.extend_from_slice(words);
+    dtm::project::quote_args(&all)
+}
+
 async fn real_main(cli: Cli) -> Result<()> {
     match cli.command {
         None => {
@@ -147,6 +185,11 @@ async fn real_main(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Cmd::KillServer) => client::kill_server().await,
+        Some(Cmd::Run { words }) => client::run_command(cli.session, dtm::project::quote_args(&words)).await,
+        Some(Cmd::NewWindow { words }) => client::run_command(cli.session, command_line("new-window", &words)).await,
+        Some(Cmd::SplitWindow { words }) => client::run_command(cli.session, command_line("split-window", &words)).await,
+        Some(Cmd::SendKeys { words }) => client::run_command(cli.session, command_line("send-keys", &words)).await,
+        Some(Cmd::KillSession { name }) => client::run_command(cli.session, command_line("kill-session", &[name])).await,
         Some(Cmd::Reload) => {
             client::reload().await?;
             println!("config reloaded");

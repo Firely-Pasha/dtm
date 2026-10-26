@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use super::actions::Trigger;
 use crate::action::{Action, Dir};
-use super::state::ClientId;
+use super::commands::{common_prefix, completions};
+use super::state::{ClientId, Prompt, PromptKind, TabState};
 use super::{Event, Server};
 use crate::keys::{self, Key, KeyEvent, MouseEvent, MouseKind};
 
@@ -69,6 +70,9 @@ impl Server {
             self.end_cycle(cid);
         }
         let Some(c) = self.clients.get_mut(&cid) else { return };
+        if c.help.is_some() {
+            return self.help_key(cid, ev);
+        }
         if c.prompt.is_some() {
             return self.prompt_key(cid, ev);
         }
@@ -177,6 +181,12 @@ impl Server {
     fn prompt_key(&mut self, cid: ClientId, ev: KeyEvent) {
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let Some(p) = c.prompt.as_mut() else { return };
+        if p.kind == PromptKind::Command && self.command_prompt_key(cid, &ev) {
+            self.mark_dirty();
+            return;
+        }
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let Some(p) = c.prompt.as_mut() else { return };
         if p.kind.is_confirm() {
             if matches!(ev.key, Key::Mouse(_)) {
                 return;
@@ -198,9 +208,157 @@ impl Server {
             Key::Backspace => {
                 p.text.pop();
             }
-            Key::Char(ch) if ev.mods & !keys::SHIFT == 0 && p.text.chars().count() < MAX_PROMPT => p.text.push(ch),
+            Key::Char(ch) if ev.mods & !keys::SHIFT == 0 && p.text.chars().count() < max_prompt(p.kind) => p.text.push(ch),
             _ => {}
         }
         self.mark_dirty();
     }
+
+    /// Tab completion and history in the `:` prompt; true when the key was used up.
+    fn command_prompt_key(&mut self, cid: ClientId, ev: &KeyEvent) -> bool {
+        let history = self.command_history.clone();
+        let Some(p) = self.clients.get_mut(&cid).and_then(|c| c.prompt.as_mut()) else { return false };
+        // Choosing from the suggestions under the input: Tab / Down go on, Shift-Tab / Up go back.
+        fn step(p: &mut Prompt, forward: bool) {
+            let Some(t) = p.tab.as_mut() else { return };
+            let n = t.candidates.len();
+            let i = match (t.shown, forward) {
+                (None, true) => 0,
+                (None, false) => n - 1,
+                (Some(i), true) => (i + 1) % n,
+                (Some(i), false) => (i + n - 1) % n,
+            };
+            t.shown = Some(i);
+            p.text = t.candidates[i].clone();
+        }
+        let has_suggestions = !p.text.contains(char::is_whitespace) && (p.tab.is_some() || !completions(&p.text).is_empty() && !p.text.is_empty());
+        match ev.key {
+            Key::Tab if ev.mods == keys::SHIFT && has_suggestions => {
+                if p.tab.is_none() {
+                    p.tab = Some(TabState { candidates: completions(&p.text), shown: None });
+                }
+                step(p, false);
+                true
+            }
+            Key::Up | Key::Down if ev.mods == 0 && has_suggestions => {
+                if p.tab.is_none() {
+                    p.tab = Some(TabState { candidates: completions(&p.text), shown: None });
+                }
+                step(p, ev.key == Key::Down);
+                true
+            }
+            Key::Tab if ev.mods == 0 => {
+                if p.text.contains(char::is_whitespace) {
+                    return true;
+                }
+                match p.tab.as_ref() {
+                    Some(_) => step(p, true),
+                    None => {
+                        let cands = completions(&p.text);
+                        match cands.len() {
+                            0 => {}
+                            1 => p.text = finished(&cands[0]),
+                            _ => {
+                                // Complete as far as the candidates agree, then cycle on the next press.
+                                let common = common_prefix(&cands);
+                                let shown = (common.len() <= p.text.len()).then_some(0);
+                                p.text = if shown.is_some() { cands[0].clone() } else { common };
+                                p.tab = Some(TabState { candidates: cands, shown });
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            Key::Up | Key::Down if ev.mods == 0 => {
+                p.tab = None;
+                match (ev.key, p.history) {
+                    (Key::Up, None) => p.history = history.len().checked_sub(1),
+                    (Key::Up, Some(i)) => p.history = Some(i.saturating_sub(1)),
+                    (_, Some(i)) if i + 1 < history.len() => p.history = Some(i + 1),
+                    (_, Some(_)) => {
+                        p.history = None;
+                        p.text.clear();
+                    }
+                    _ => {}
+                }
+                if let Some(h) = p.history.and_then(|i| history.get(i)) {
+                    p.text = h.clone();
+                }
+                true
+            }
+            _ => {
+                p.tab = None;
+                false
+            }
+        }
+    }
+
+    /// Keys while the help list is open.
+    pub(super) fn help_key(&mut self, cid: ClientId, ev: KeyEvent) {
+        // Typing a search: text goes into the query, which filters the list as it changes.
+        if let Some(h) = self.clients.get_mut(&cid).and_then(|c| c.help.as_mut()).filter(|h| h.typing) {
+            match ev.key {
+                Key::Enter => h.typing = false,
+                Key::Escape => {
+                    h.typing = false;
+                    h.query.clear();
+                }
+                Key::Backspace => {
+                    if h.query.pop().is_none() {
+                        h.typing = false;
+                    }
+                }
+                Key::Char(ch) if ev.mods & !keys::SHIFT == 0 => h.query.push(ch),
+                Key::Up | Key::Down | Key::PageUp | Key::PageDown => {}
+                _ => return,
+            }
+            if !matches!(ev.key, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
+                h.scroll = 0;
+                return self.mark_dirty();
+            }
+        }
+        let Some(h) = self.clients.get(&cid).and_then(|c| c.help.as_ref()) else { return };
+        let total = self.help_view(h).len();
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let body = super::render::help_body_rows(c.rows as usize);
+        let Some(help) = c.help.as_mut() else { return };
+        let max = total.saturating_sub(body);
+        let mut close = false;
+        match ev.key {
+            Key::Char('/') if !help.typing => {
+                help.typing = true;
+                help.scroll = 0;
+            }
+            Key::Escape if !help.query.is_empty() => {
+                help.query.clear();
+                help.scroll = 0;
+            }
+            Key::Char('q' | '?') | Key::Escape => close = true,
+            Key::Char('j') | Key::Down => help.scroll += 1,
+            Key::Char('k') | Key::Up => help.scroll = help.scroll.saturating_sub(1),
+            Key::PageDown | Key::Char(' ') => help.scroll += body,
+            Key::PageUp | Key::Char('b') => help.scroll = help.scroll.saturating_sub(body),
+            Key::Home | Key::Char('g') => help.scroll = 0,
+            Key::End | Key::Char('G') => help.scroll = max,
+            Key::Mouse(m) if m.kind == MouseKind::WheelDown => help.scroll += 3,
+            Key::Mouse(m) if m.kind == MouseKind::WheelUp => help.scroll = help.scroll.saturating_sub(3),
+            _ => {}
+        }
+        help.scroll = help.scroll.min(max);
+        if close {
+            c.help = None;
+        }
+        self.mark_dirty();
+    }
+}
+
+/// How much a prompt takes: commands are longer than names.
+fn max_prompt(kind: PromptKind) -> usize {
+    if kind == PromptKind::Command { 256 } else { MAX_PROMPT }
+}
+
+/// A completed name, with a space after it when it needs an argument.
+fn finished(name: &str) -> String {
+    if name == "send-keys" || name.parse::<crate::action::Action>().is_err() { format!("{name} ") } else { name.to_string() }
 }

@@ -8,6 +8,7 @@ use serde::Deserialize;
 use crate::action::Action;
 use crate::keys::{format_key, parse_key, KeyCombo, CTRL};
 use crate::project::{parse_size, Size, SizeSpec};
+use crate::theme::{parse_color, Theme, PRESETS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -59,6 +60,7 @@ pub struct Config {
     pub islands: bool,
     pub sidebar: SidebarCfg,
     pub popup: PopupCfg,
+    pub theme: Theme,
     pub prefix_keys: HashMap<KeyCombo, Action>,
     pub root_keys: HashMap<KeyCombo, Action>,
     pub copy_keys: HashMap<KeyCombo, Action>,
@@ -72,7 +74,55 @@ struct RawConfig {
     options: RawOptions,
     sidebar: RawSidebar,
     popup: RawPopup,
+    theme: RawTheme,
     keys: RawKeys,
+}
+
+/// `[theme]`: a preset to start from, then colours for single slots.
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawTheme {
+    preset: Option<String>,
+    border: Option<String>,
+    border_focus: Option<String>,
+    muted: Option<String>,
+    title: Option<String>,
+    selection_bg: Option<String>,
+    selection_fg: Option<String>,
+    active_bg: Option<String>,
+    active_fg: Option<String>,
+    match_bg: Option<String>,
+    match_current_bg: Option<String>,
+}
+
+impl RawTheme {
+    fn build(&self) -> Result<Theme, String> {
+        let mut t = match &self.preset {
+            None => Theme::DEFAULT,
+            Some(p) => Theme::preset(p)
+                .ok_or_else(|| format!("theme.preset: unknown preset {p:?} (one of {})", PRESETS.join(", ")))?,
+        };
+        let slots: [(&str, &Option<String>, &mut crate::term::cell::Color); 9] = [
+            ("border", &self.border, &mut t.border),
+            ("border_focus", &self.border_focus, &mut t.border_focus),
+            ("muted", &self.muted, &mut t.muted),
+            ("title", &self.title, &mut t.title),
+            ("selection_bg", &self.selection_bg, &mut t.selection_bg),
+            ("selection_fg", &self.selection_fg, &mut t.selection_fg),
+            ("active_bg", &self.active_bg, &mut t.active_bg),
+            ("active_fg", &self.active_fg, &mut t.active_fg),
+            ("match_bg", &self.match_bg, &mut t.match_bg),
+        ];
+        for (name, value, slot) in slots {
+            if let Some(v) = value {
+                *slot = parse_color(v).map_err(|e| format!("theme.{name}: {e}"))?;
+            }
+        }
+        if let Some(v) = &self.match_current_bg {
+            t.match_current_bg = parse_color(v).map_err(|e| format!("theme.match_current_bg: {e}"))?;
+        }
+        Ok(t)
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -163,6 +213,9 @@ const DEFAULT_PREFIX_KEYS: &[(&str, &str)] = &[
     ("&", "kill-window"),
     (",", "rename-window"),
     ("C", "new-group"),
+    ("Q", "kill-session"),
+    (":", "command-prompt"),
+    ("?", "help"),
     ("$", "rename-session"),
     ("b", "toggle-sidebar"),
     ("s", "toggle-sidebar-mode"),
@@ -275,6 +328,17 @@ const DEFAULT_COPY_KEYS: &[(&str, &str)] = &[
     ("$", "copy-line-end"),
     ("v", "copy-select"),
     ("V", "copy-select-line"),
+    ("C-v", "copy-select-rect"),
+    ("/", "copy-search-forward"),
+    ("?", "copy-search-backward"),
+    ("n", "copy-search-next"),
+    ("N", "copy-search-prev"),
+    ("w", "copy-word-next"),
+    ("b", "copy-word-prev"),
+    ("e", "copy-word-end"),
+    ("H", "copy-view-top"),
+    ("M", "copy-view-middle"),
+    ("L", "copy-view-bottom"),
     ("Space", "copy-select"),
     ("y", "copy-yank"),
     ("Enter", "copy-yank"),
@@ -313,6 +377,7 @@ impl Default for Config {
             copy_keys: default_table(DEFAULT_COPY_KEYS),
             resize_keys: default_table(DEFAULT_RESIZE_KEYS),
             popup: PopupCfg { width: Size::Percent(80.0), height: Size::Percent(80.0) },
+            theme: Theme::DEFAULT,
             sidebar_keys: default_sidebar_keys(Position::Left),
         }
     }
@@ -392,6 +457,7 @@ impl Config {
         if let Some(v) = &raw.popup.height {
             cfg.popup.height = parse_size(v).map_err(|e| format!("popup.height: {e}"))?;
         }
+        cfg.theme = raw.theme.build()?;
         apply_table(&mut cfg.prefix_keys, &raw.keys.prefix, "prefix")?;
         apply_table(&mut cfg.root_keys, &raw.keys.root, "root")?;
         apply_table(&mut cfg.copy_keys, &raw.keys.copy, "copy")?;
@@ -606,6 +672,26 @@ mod tests {
         for (k, a) in &d.copy_keys {
             assert_eq!(c.copy_keys.get(k), Some(a), "{}", format_key(*k));
         }
+        assert_eq!(c.theme, d.theme, "the documented [theme] is the default preset");
+    }
+
+    #[test]
+    fn theme_starts_from_a_preset_and_overrides_single_slots() {
+        use crate::term::cell::Color;
+        let c = Config::from_toml("[theme]\npreset = \"nord\"\nborder_focus = \"red\"\nmuted = \"#112233\"").unwrap();
+        assert_eq!(c.theme.border_focus, Color::Idx(1));
+        assert_eq!(c.theme.muted, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(c.theme.border, Theme::preset("nord").unwrap().border);
+        assert_eq!(Config::from_toml("").unwrap().theme, Theme::DEFAULT);
+    }
+
+    #[test]
+    fn theme_errors_name_the_setting() {
+        let err = |t: &str| Config::from_toml(t).unwrap_err();
+        assert!(err("[theme]\npreset = \"neon\"").contains("theme.preset") && err("[theme]\npreset = \"neon\"").contains("nord"));
+        assert!(err("[theme]\nborder = \"mauve\"").contains("theme.border"));
+        assert!(err("[theme]\nmatch_current_bg = \"#12\"").contains("theme.match_current_bg"));
+        assert!(err("[theme]\nbogus = \"red\"").contains("bogus"));
     }
 
     #[test]

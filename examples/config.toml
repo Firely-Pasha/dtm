@@ -35,6 +35,24 @@ follow = true           # moving the selection in the focused sidebar shows that
 width = "80%"           # a percentage of the pane area, or a number of cells
 height = "80%"
 
+# Colours. Start from a preset (default | mono | nord | gruvbox) and change single slots.
+# A colour is a name (red, bright-black, default), a palette number 0-255 or "#rrggbb".
+# The values below are the "default" preset, which uses palette colours so that it follows
+# the terminal's own theme.
+[theme]
+# preset = "default"
+border = "bright-black"        # box borders and separators
+border_focus = "green"         # the border of whatever has the keyboard
+muted = "bright-black"         # dim text: subheaders, hints, placeholders
+title = "default"              # the session name and prompts (always bold)
+# A row style is inverted while its background is "default"; set both colours to replace that.
+selection_bg = "default"       # the sidebar's keyboard selection (always bold)
+selection_fg = "default"
+active_bg = "default"          # the shown window in the sidebar, the dock's current tab
+active_fg = "default"
+match_bg = "yellow"            # copy-mode search matches (black text)
+match_current_bg = "magenta"   # the match the cursor is on
+
 # Keys pressed after the prefix. A value of "none" removes a default binding.
 [keys.prefix]
 "c" = "new-window"
@@ -42,6 +60,9 @@ height = "80%"
 "n" = "next-window"
 "p" = "prev-window"
 "1" = "select-window 1"       # ... "9" = "select-window 9" (the first group's windows)
+"Q" = "kill-session"         # asks y/n
+":" = "command-prompt"       # run any action or command by name (Tab completes)
+"?" = "help"                 # the key list
 "C" = "new-group"            # asks for a name; Ctrl-a <group tag> <window tag> opens a window
 "," = "rename-window"
 "|" = "split-vertical"        # panes side by side
@@ -152,6 +173,17 @@ height = "80%"
 "$" = "copy-line-end"
 "v" = "copy-select"           # start/clear selection
 "V" = "copy-select-line"      # select whole lines
+"C-v" = "copy-select-rect"    # select a rectangle
+"/" = "copy-search-forward"   # asks for text; smart case (capitals make it case-sensitive)
+"?" = "copy-search-backward"
+"n" = "copy-search-next"      # repeat the search
+"N" = "copy-search-prev"      # ... the other way
+"w" = "copy-word-next"        # word motions: start of the next word
+"b" = "copy-word-prev"        # start of this / the previous word
+"e" = "copy-word-end"         # end of this / the next word
+"H" = "copy-view-top"         # top / middle / bottom row of the view
+"M" = "copy-view-middle"
+"L" = "copy-view-bottom"
 "y" = "copy-yank"             # copy selection (or current line) and leave
 "q" = "copy-cancel"
 "Escape" = "copy-cancel"

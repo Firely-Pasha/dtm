@@ -394,16 +394,20 @@ async fn copy_mode_scrolls_yanks_and_pastes() {
     h.wait_for("top of history", |t| t.contains("seq 1 100") && t.contains("[copy")).await;
     h.send("y");
     h.wait_text("copied 11 characters").await;
+    // copying keeps copy mode (and the cursor); `q` leaves it
+    assert!(h.text().contains("[copy"), "still in copy mode:\n{}", h.text());
+    h.send("q");
     h.wait_for("left copy mode", |t| !t.contains("[copy")).await;
 
     h.send(&format!("{CTRL_A}]"));
     h.wait_text("$ $ seq 1 100").await;
     h.send("\x15");
 
-    // selection across lines: select two lines near the top and yank
+    // selection across lines: select two lines near the top and yank; the selection ends
     h.send(&format!("{CTRL_A}[g"));
     h.send("vjy");
     h.wait_text("copied").await;
+    h.send("q");
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
 }
@@ -2075,4 +2079,394 @@ async fn prefix_n_and_p_do_not_load_windows_that_have_not_started() {
     h.send("o");
     h.wait_text("TWO2").await;
     assert!(!h.text().contains("THREE3"), "{}", h.text());
+}
+
+#[tokio::test]
+async fn theme_colours_reach_the_screen_and_follow_reload() {
+    use dtm::term::cell::Color;
+    let env = Env::new("theme", "[theme]\nborder_focus = \"#ff8800\"\nborder = \"#102030\"\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    // plain style: the separator beside the sidebar uses `border`, a focused sidebar `border_focus`
+    h.wait_screen("border colour", |s| s.cell(23, 5).attrs.fg == Color::Rgb(0x10, 0x20, 0x30)).await;
+    h.send(&format!("{CTRL_A}w"));
+    h.wait_text(SIDEBAR_HINT).await;
+    h.wait_screen("focus colour", |s| s.cell(23, 5).attrs.fg == Color::Rgb(0xff, 0x88, 0x00)).await;
+
+    // a preset, applied by reload
+    std::fs::write(&env.config, with_plain_style("[theme]\npreset = \"nord\"\n")).unwrap();
+    let (ok, out) = env.run(&["reload"]);
+    assert!(ok, "{out}");
+    h.wait_screen("nord focus", |s| s.cell(23, 5).attrs.fg == Color::Rgb(0x88, 0xc0, 0xd0)).await;
+
+    // a bad colour is rejected and the running theme stays
+    std::fs::write(&env.config, "[theme]\nborder = \"mauve\"\n").unwrap();
+    let (ok, out) = env.run(&["reload"]);
+    assert!(!ok && out.contains("theme.border"), "{out}");
+    h.send("q");
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn copy_mode_searches_scrollback_and_highlights_the_match() {
+    use dtm::term::cell::Color;
+    let env = Env::new("copy-search", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("seq 1 200 | sed 's/^/row/'; echo DONE$((1+1))\r");
+    h.wait_text("DONE2").await;
+    assert!(!h.text().contains("row37"), "row37 has scrolled out of view");
+
+    // The text the current match (the one with the cursor on it) covers.
+    fn current(h: &Harness) -> String {
+        use dtm::term::cell::Color;
+        let sc = &h.screen;
+        (0..30)
+            .find_map(|y| {
+                let xs: String = (24..100).filter(|&x| sc.cell(x, y).attrs.bg == Color::Idx(5)).map(|x| sc.cell(x, y).ch).collect();
+                (!xs.is_empty()).then_some(xs)
+            })
+            .unwrap_or_default()
+    }
+
+    h.send(&format!("{CTRL_A}["));
+    h.send("?");
+    h.wait_text("search up").await;
+    h.send("row3\r");
+    h.wait_text("?row3").await; // the copy label names the search
+    h.wait_screen("current match highlighted", |_| true).await;
+    assert_eq!(current(&h), "row3", "{}", h.text());
+    // the match sits on the latest row3x line; n goes on the way it was typed, N comes back
+    let first = (0..30).find(|&y| h.screen.cell(24, y).attrs.bg == Color::Idx(5)).unwrap();
+    let line = |h: &Harness, y: usize| h.screen.text()[y].split('│').nth(1).unwrap_or("").trim().to_string();
+    assert!(line(&h, first).starts_with("row39"), "{}", h.text());
+    h.send("n");
+    h.wait_screen("on row38", |s| {
+        (0..30).any(|y| s.cell(24, y).attrs.bg == Color::Idx(5) && s.text()[y].contains("row38"))
+    })
+    .await;
+    h.send("N");
+    h.wait_screen("back on row39", |s| {
+        (0..30).any(|y| s.cell(24, y).attrs.bg == Color::Idx(5) && s.text()[y].contains("row39"))
+    })
+    .await;
+    h.send("?");
+    h.send("zzzz\r");
+    h.wait_text("no match for zzzz").await;
+    h.send("q");
+    h.wait_text("DONE2").await;
+}
+
+#[tokio::test]
+async fn the_command_prompt_runs_actions_completes_names_and_remembers_history() {
+    let env = Env::new("cmd-prompt", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("echo AAA$((1+1))\r");
+    h.wait_text("AAA2").await;
+    h.send(&format!("{CTRL_A}c"));
+    h.send("echo BBB$((1+1))\r");
+    h.wait_text("BBB2").await;
+
+    // an action with an argument; Tab completes the name (and adds the space)
+    h.send(&format!("{CTRL_A}:"));
+    h.wait_text("command").await;
+    h.send("select-w\t");
+    h.wait_text("select-window ").await;
+    h.send("1\r");
+    h.wait_for("window 1", |t| t.contains("AAA2") && !t.contains("BBB2")).await;
+
+    // Up recalls the last line; Tab cycles through ambiguous names
+    h.send(&format!("{CTRL_A}:"));
+    h.send("\x1b[A");
+    h.wait_text("select-window 1").await;
+    h.send("\x1b");
+    h.wait_for("prompt closed", |t| !t.contains("command")).await;
+    h.send(&format!("{CTRL_A}:"));
+    h.send("copy-\t");
+    h.wait_text("copy-bottom").await;
+    h.send("\t");
+    h.wait_text("copy-cancel").await;
+    h.send("\x1b");
+    h.wait_for("prompt closed", |t| !t.contains("command")).await;
+
+    // a command with flags, and a mistake
+    h.send(&format!("{CTRL_A}:"));
+    h.send("new-window -n API 'echo MADE$((6*7))'\r");
+    h.wait_text("MADE42").await;
+    h.wait_text("API").await;
+    h.send(&format!("{CTRL_A}:"));
+    h.send("bogus\r");
+    h.wait_text("unknown action").await;
+}
+
+#[tokio::test]
+async fn prefix_q_kills_the_shown_session_after_asking() {
+    let env = Env::new("kill-session", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}S"));
+    h.wait_for("second session", |t| t.lines().next().is_some_and(|l| l.trim_start().starts_with('1'))).await;
+    h.send(&format!("{CTRL_A}Q"));
+    h.wait_text("kill session 1?").await;
+    h.send("n");
+    h.wait_for("cancelled", |t| !t.contains("kill session")).await;
+    assert!(env.run(&["ls"]).1.contains("1:"), "still there");
+    h.send(&format!("{CTRL_A}Q"));
+    h.send("y");
+    h.wait_for("back on session 0", |t| t.lines().next().is_some_and(|l| l.trim_start().starts_with('0'))).await;
+    let (_, ls) = env.run(&["ls"]);
+    assert!(ls.contains("0:") && !ls.contains("1:"), "{ls}");
+}
+
+#[tokio::test]
+async fn the_help_list_shows_the_effective_keys_and_scrolls() {
+    let env = Env::new("help", "[keys.prefix]\n\"t\" = \"toggle-maximize\"\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}?"));
+    h.wait_text("After the prefix (C-a)").await;
+    // the remapped key is listed under its action (the list is sorted by action; page down to it)
+    let found = |h: &Harness| h.screen.text().iter().any(|l| l.contains("│   t ") && l.contains("toggle-maximize"));
+    for _ in 0..6 {
+        if found(&h) {
+            break;
+        }
+        let before = h.text();
+        h.send(" ");
+        h.wait_for("next page", |t| t != before).await;
+    }
+    assert!(found(&h), "{}", h.text());
+    h.send("G");
+    h.wait_text("For a moment after a resize").await;
+    assert!(!h.text().contains("After the prefix"), "scrolled past the first section");
+    h.send("g");
+    h.wait_text("After the prefix (C-a)").await;
+    h.send("q");
+    h.wait_for("closed", |t| !t.contains("After the prefix")).await;
+    // the keys went to the help, not to the shell behind it
+    h.send("echo SHELL$((1+1))\r");
+    h.wait_text("SHELL2").await;
+}
+
+#[tokio::test]
+async fn dtm_run_and_friends_script_a_running_server() {
+    let env = Env::new("cli-run", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+
+    let (ok, out) = env.run(&["new-window", "-n", "CLI", "echo CLIOK$((6*7))"]);
+    assert!(ok, "{out}");
+    h.wait_text("CLIOK42").await;
+    h.wait_text("CLI").await;
+    let (ok, out) = env.run(&["send-keys", "echo TYPED$((1+1))", "Enter"]);
+    assert!(ok, "{out}");
+    h.wait_text("TYPED2").await;
+    let (ok, out) = env.run(&["run", "split-window", "-h"]);
+    assert!(ok, "{out}");
+    h.wait_for("two panes", |t| t.lines().any(|l| l.matches('│').count() >= 2)).await;
+    // actions run as if typed by the attached client
+    let (ok, out) = env.run(&["--session", "0", "run", "select-window", "1"]);
+    assert!(ok, "{out}");
+    h.wait_for("window 1 shown", |t| !t.contains("CLIOK42")).await;
+
+    let (ok, out) = env.run(&["run", "bogus"]);
+    assert!(!ok && out.contains("unknown action"), "{out}");
+    let (ok, out) = env.run(&["--session", "nope", "run", "help"]);
+    assert!(!ok && out.contains("no such session"), "{out}");
+
+    // detached: actions need a client, plain commands do not
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+    let (ok, out) = env.run(&["run", "toggle-maximize"]);
+    assert!(!ok && out.contains("no client attached"), "{out}");
+    let (ok, out) = env.run(&["new-window", "sleep 30"]);
+    assert!(ok, "{out}");
+    let (ok, out) = env.run(&["kill-session", "0"]);
+    assert!(ok, "{out}");
+}
+
+/// SGR mouse reports for a drag with the left button, from `from` to `to` (0-based cells).
+fn sgr_drag(from: (u16, u16), to: (u16, u16)) -> String {
+    format!(
+        "\x1b[<0;{};{}M\x1b[<32;{};{}M\x1b[<0;{};{}m",
+        from.0 + 1,
+        from.1 + 1,
+        to.0 + 1,
+        to.1 + 1,
+        to.0 + 1,
+        to.1 + 1
+    )
+}
+
+fn sgr_click(at: (u16, u16)) -> String {
+    format!("\x1b[<0;{};{}M\x1b[<0;{};{}m", at.0 + 1, at.1 + 1, at.0 + 1, at.1 + 1)
+}
+
+#[tokio::test]
+async fn dragging_selects_text_and_double_and_triple_clicks_pick_a_word_or_a_line() {
+    let env = Env::new("mouse-select", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("echo HELLO-WORLD-123\r");
+    h.wait_text("HELLO-WORLD-123").await;
+    // the pane's text starts at column 24; "HELLO-WORLD-123" is on row 1
+    h.send(&sgr_drag((24 + 6, 1), (24 + 10, 1)));
+    h.wait_text("y copies the selection").await;
+    h.wait_text("[copy").await;
+    h.send("y");
+    h.wait_text("copied 5 characters").await;
+    h.send("q");
+    h.wait_for("left copy mode", |t| !t.contains("[copy")).await;
+    h.send(&format!("{CTRL_A}]"));
+    h.wait_text("$ WORLD").await;
+
+    // double click: the word under the pointer; triple click: the whole line. Each is pasted
+    // after what is already typed (the shell has no line editing to clear it with).
+    h.send(&format!("{0}{0}", sgr_click((24 + 7, 1))));
+    h.wait_text("[copy").await;
+    h.send("y");
+    h.send(&format!("{CTRL_A}]"));
+    h.wait_text("$ WORLDWORLD").await;
+    // (clicks within 400 ms of each other count together, so let that pass first)
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    h.send(&format!("{0}{0}{0}", sgr_click((24 + 7, 1))));
+    h.wait_text("[copy").await;
+    h.send("y");
+    h.send(&format!("{CTRL_A}]"));
+    h.wait_text("$ WORLDWORLDHELLO-WORLD-123").await;
+}
+
+#[tokio::test]
+async fn dragging_a_border_resizes_panes_and_dragging_the_sidebar_edge_resizes_it() {
+    let env = Env::new("mouse-resize", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}|"));
+    h.send("stty size\r");
+    h.wait_for("split", |t| last_size(t, 30).is_some()).await;
+    // 76 columns for the panes: 38 + the border at column 62 + 37
+    h.wait_cell(62, 5, '│').await;
+    h.send(&sgr_drag((62, 5), (50, 5)));
+    h.wait_cell(50, 5, '│').await;
+    h.send("stty size\r");
+    h.wait_for("right pane is wider", |t| last_size(t, 30) == Some(49)).await;
+
+    // the sidebar's edge column
+    h.wait_cell(23, 5, '│').await;
+    h.send(&sgr_drag((23, 5), (29, 5)));
+    h.wait_cell(29, 5, '│').await;
+    h.wait_for("sidebar wider", |t| t.lines().nth(5).is_some_and(|l| l.chars().nth(29) == Some('│'))).await;
+}
+
+#[tokio::test]
+async fn dragging_the_dock_edge_resizes_the_dock() {
+    let env = Env::new("mouse-dock", "");
+    let proj = env.dir.join("proj");
+    write(
+        &proj.join("project.dtm.yaml"),
+        "name: dk\ndock:\n  visible: true\n  width: 40%\n  panes:\n    - command: echo DK\nwindows:\n  - name: main\n",
+    );
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text("DK").await;
+    h.wait_cell(72, 5, '│').await; // the dock's separator, width 48
+    h.send(&sgr_drag((72, 5), (62, 5)));
+    h.wait_cell(62, 5, '│').await;
+}
+
+#[tokio::test]
+async fn dragging_a_sidebar_entry_moves_the_window() {
+    let env = Env::new("mouse-reorder", "");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "name: ro\nwindows:\n  - name: aaa\n  - name: bbb\n  - name: ccc\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("1 aaa").await;
+    // rows 2, 3, 4 hold the three windows; drag the first one down two places
+    h.send(&sgr_drag((5, 2), (5, 4)));
+    h.wait_for("aaa moved to the end", |t| t.contains("1 bbb") && t.contains("2 ccc") && t.contains("3 aaa")).await;
+}
+
+#[tokio::test]
+async fn the_command_prompt_lists_suggestions_under_the_input() {
+    let env = Env::new("cmd-suggest", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}:"));
+    h.wait_text("command").await;
+    assert!(!h.text().contains("toggle-"), "nothing is suggested before typing");
+    // the box keeps its size whatever is listed: rows from its top border to its bottom border
+    let height = |h: &Harness| {
+        let t = h.screen.text();
+        let top = t.iter().position(|l| l.contains("╭─"))?;
+        let bottom = t.iter().position(|l| l.contains("╰─"))?;
+        // the confirm / cancel hint is stuck to the bottom of the box
+        let hint = t.iter().position(|l| l.contains("enter confirm"))?;
+        assert_eq!(bottom - hint, 2, "hint one padding row above the border\n{t:?}");
+        Some((top, bottom))
+    };
+    let empty_box = height(&h).expect("a box");
+    let input = |h: &Harness| h.screen.text().iter().find(|l| l.contains("│ › ")).map(|l| l.split("› ").nth(1).unwrap_or("").trim().trim_end_matches('│').trim().to_string());
+
+    h.send("toggle-");
+    h.wait_text("toggle-maximize").await; // listed, although the input is still `toggle-`
+    h.wait_text("toggle-popup").await;
+    assert_eq!(input(&h).as_deref(), Some("toggle-"), "{}", h.text());
+    assert_eq!(height(&h), Some(empty_box), "many suggestions: same box\n{}", h.text());
+    // the list sits below the input row
+    let text = h.screen.text();
+    let row = |needle: &str| text.iter().position(|l| l.contains(needle)).unwrap();
+    assert!(row("toggle-dock") > row("› toggle-"), "{text:?}");
+
+    // Down / Up choose from it, Shift-Tab goes back from the start
+    h.send("\x1b[B");
+    h.wait_for("first suggestion", |_| true).await;
+    h.send("\x1b[B");
+    h.wait_for("second", |t| t.lines().any(|l| l.contains("› toggle-maximize"))).await;
+    h.send("\x1b[A");
+    h.wait_for("back to the first", |t| t.lines().any(|l| l.contains("› toggle-dock"))).await;
+    h.send("\x1b[Z");
+    h.wait_for("last", |t| t.lines().any(|l| l.contains("› toggle-sidebar-mode"))).await;
+    // typing on narrows the list again
+    h.send(&format!("{}pop", "\x7f".repeat("toggle-sidebar-mode".len() - "toggle-".len())));
+    h.wait_for("narrowed", |t| t.lines().any(|l| l.contains("› toggle-pop")) && !t.contains("toggle-dock")).await;
+    assert_eq!(height(&h), Some(empty_box), "one suggestion: same box\n{}", h.text());
+    h.send("\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7f\x7fzzzz");
+    h.wait_for("no match", |t| t.lines().any(|l| l.contains("› zzzz"))).await;
+    assert_eq!(height(&h), Some(empty_box), "no suggestions: same box\n{}", h.text());
+    h.send("\x7f\x7f\x7f\x7f");
+    h.send("toggle-pop");
+    // Enter runs what is in the input
+    h.send("up\r");
+    h.wait_for("popup open", |t| t.contains("popup")).await;
+}
+
+#[tokio::test]
+async fn help_can_be_searched() {
+    let env = Env::new("help-search", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}?"));
+    h.wait_text("/ search").await;
+    h.send("/");
+    h.wait_text("enter keep").await;
+    h.send("yank");
+    // only the matching lines, under their heading
+    h.wait_for("filtered", |t| t.contains("copy-yank") && !t.contains("After the prefix") && t.contains("Copy mode")).await;
+    assert!(!h.text().contains("new-window"), "{}", h.text());
+    h.send("\r");
+    h.wait_text("filter: yank").await;
+    // typing keys now scroll and close as usual; Esc clears the filter first
+    h.send("\x1b");
+    h.wait_text("After the prefix").await;
+    h.wait_for("filter gone", |t| !t.contains("filter: yank")).await;
+    // by key name too, and a miss
+    h.send("/");
+    h.send("C-l\r");
+    h.wait_text("send-key").await;
+    h.send("/");
+    h.send("\x7f\x7f\x7fzzzzq\r");
+    h.wait_text("no match").await;
+    h.send("q");
+    h.wait_for("closed", |t| !t.contains("no match") && !t.contains("filter:")).await;
 }

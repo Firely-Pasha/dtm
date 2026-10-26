@@ -12,8 +12,10 @@ screen model, the frame differ and the layout engine. There is no `vt100`,
 - **[Projects](#projects)**: describe a session's windows, splits and start commands in
   YAML, open it with `dtm open`, export a running session back to a file.
 - **A [dock](#the-dock)** for session-wide panes (lazygit, a log tail) and a **[popup](#popup)** shell.
-- Maximize, zoom, copy mode, mouse support, recently-used window cycling, and a
-  rounded-box ["islands" look](#islands-style) (with a `plain` alternative).
+- Maximize, zoom, recently-used window cycling, and a rounded-box ["islands" look](#islands-style)
+  (with a `plain` alternative) with [themes](#themes).
+- Copy mode with search and word motions, and a mouse that [selects, resizes and reorders](#default-keys-after-the-prefix).
+- A [`:` command prompt, a key list and a CLI](#commands-and-scripting) to script a running server.
 - Seamless `Ctrl-h/j/k/l` movement between panes and [Neovim](#neovim-plugin) splits.
 - Works on Linux and macOS.
 
@@ -33,12 +35,13 @@ dtm project ls|edit|rm         # manage saved projects
 dtm reload                     # re-read the config file
 dtm select-pane -R             # move pane focus (used by editor plugins, see below)
 dtm query '#{pane_at_left}'    # print a pane's state (used by editor plugins)
+dtm run toggle-maximize        # run any action or command (see Commands and scripting)
+dtm new-window -c ~/code htop  # ... or one of the shorthands, also split-window, send-keys, kill-session
 dtm kill-server                # end the server and every session
 ```
 
 The default prefix is **Ctrl-a**. The server exits when its last session ends.
-To close one session, focus the sidebar (`<prefix> w`), switch it to sessions
-(`Tab`), select the session and press `x`.
+`<prefix> Q` closes the shown session after asking.
 
 On macOS a binary that was copied or rebuilt can be killed on start (`Killed: 9`)
 because its code signature no longer matches; re-sign it with
@@ -64,6 +67,8 @@ because its code signature no longer matches; re-sign it with
 | `Alt-r` | respawn window (asks) | `f` or `/` | search windows |
 | `Tab` | previously opened window (then `Tab` / `Shift-Tab` repeat) | `m` | maximize / restore |
 | `C` | new window group (asks) | `<tag>` `<tag>` | window of a group, e.g. `g 1` |
+| `Q` | kill the session (asks) | `:` | command prompt (see below) |
+| `?` | list the key bindings | | |
 | `P` | popup shell (toggle) | `D` | show / hide the dock |
 | `{` / `}` | previous / next dock pane | `A` / `X` | add / close a dock pane |
 
@@ -97,15 +102,68 @@ an iTerm2 key mapping "Send Escape Sequence" `[9;5u`. xterm's
 resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
 don't have to press the prefix again for every step. Any other key ends it.
 
-**Copy mode** (`k j h l`, `PageUp/Down`, `Ctrl-u/d`, `g`/`G` for top/bottom,
-`0`/`$`, `v` to select, `V` to select whole lines, `y` to copy and leave, `q`
-to cancel). Copied text is
-kept in dtm's paste buffer and also sent to the terminal clipboard (OSC 52).
+**Copy mode** (`<prefix> [`, or `PageUp`): move with `k j h l`, `PageUp/Down`, `Ctrl-u/d`,
+`g`/`G` for top/bottom, `0`/`$`, the word motions `w` `b` `e`, and `H` `M` `L` for the top,
+middle and bottom row of the view. `/` searches forward and `?` backward (it asks for the
+text; a term without capitals ignores case), `n` repeats the search the way it was typed
+and `N` the other way; matches are highlighted and the current one stands out
+(`[theme] match_bg`). `v` selects, `V` selects whole lines, `Ctrl-v` a rectangle; `y`
+copies: the selection ends but you stay in copy mode with the cursor where it was (so you can
+select and copy again), and `q` leaves. Copied text is kept in dtm's paste buffer and also sent
+to the terminal clipboard (OSC 52).
 
 **Mouse**: click a sidebar entry (or a group's title) to switch window or session,
 click a pane or a dock tab to focus it, scroll the wheel to enter copy mode (or scroll full-screen apps).
-Applications that request mouse reporting receive the events. Hold Shift to
-select text with the terminal itself, or set `mouse = false`.
+- **Select text** by dragging in a pane: it enters copy mode with the text selected (dragging above or
+  below the pane scrolls it), `y` or Enter copies. A double click selects a word and a triple
+  click a line. Panes whose program asked for mouse reports (vim with `mouse=a`, htop) get the
+  events instead.
+- **Resize** by dragging the border between panes, the edge of the sidebar, or the edge of the dock.
+- **Reorder** by dragging a window (or session) up or down in the sidebar; it moves into the neighbouring
+  group when it passes the edge of its own.
+
+dtm asks the terminal for button-event mouse reports (mode 1002, which includes drags); a terminal
+without it still gets clicks and the wheel. Hold Shift to select text with the terminal itself,
+or set `mouse = false`.
+
+## Commands and scripting
+
+`<prefix> :` opens a prompt that runs any action by name (`select-window 3`, `toggle-maximize`,
+`copy-mode`) or one of these commands:
+
+| Command | Does |
+|---|---|
+| `new-window [-c DIR] [-n NAME] [COMMAND]` | a window in the shown group; `COMMAND` is typed into its shell |
+| `split-window [-h] [-v] [-c DIR] [COMMAND]` | split the shown pane (`-h` side by side, `-v` stacked, the default) |
+| `new-session [-s NAME] [-c DIR]` | a session, and switch to it |
+| `kill-session NAME` | close a session without asking |
+| `rename-window NAME`, `rename-session NAME` | rename the shown window or session |
+| `send-keys [-l] [-t PANE] KEY\|TEXT...` | type into a pane: `Enter`, `C-c`, `Up`, `F5` are keys, anything else is text (`-l`: everything is text) |
+
+As you type the name, the names that match are listed under the prompt. `Tab` or `Down` choose the
+next one (the first `Tab` also completes as far as the choices agree), `Shift-Tab` or `Up` the
+previous; with nothing typed, `Up` / `Down` walk the commands you ran before. Enter runs it, Esc cancels. Quote words with spaces: `new-window -n "my app"`.
+
+The same commands run from a shell, which makes dtm scriptable:
+
+```
+dtm run 'new-window -c ~/code -n api "cargo run"'
+dtm new-window -c ~/code -n api cargo run     # shorthand, the arguments are the command
+dtm split-window -h
+dtm send-keys 'cargo test' Enter              # into the focused pane
+dtm send-keys -t 7 C-c                        # into pane 7
+dtm run select-window 2
+dtm --session work kill-session scratch
+```
+
+Inside a pane they target that pane's session; elsewhere `--session NAME` picks one (a single
+running session is picked automatically). Actions that need someone looking at the session
+(focus, prompts, maximize) use the most recently active attached client and say "no client attached"
+when there is none; `new-window`, `split-window`, `send-keys` and `kill-session` work detached.
+
+`<prefix> ?` lists the key bindings, taken from your config so remaps show up (`j`/`k`, space and
+`b` scroll, `q` closes). `/` searches it: type part of a key or an action name (any case) and only
+the matching lines are listed under their headings; Enter keeps the filter, Esc clears it.
 
 ## Navigating with Ctrl-h/j/k/l
 
@@ -339,6 +397,33 @@ has two fewer columns and rows of text than in the plain style, and `stty size`
 in a pane reports that smaller size. `Ctrl-a m` still makes a pane fill the whole
 terminal without a box, and `dtm reload` switches styles in a running server.
 
+## Themes
+
+Colours are set in `[theme]`. Start from a preset with `preset = "default"` (the
+terminal's own palette colours), `"mono"`, `"nord"` or `"gruvbox"`, and change single
+slots; a colour is a name (`red`, `bright-black`), a palette number `0`-`255`, or
+`"#rrggbb"`:
+
+```toml
+[theme]
+preset = "nord"
+border_focus = "#a3be8c"   # the border of whatever has the keyboard
+```
+
+| Slot | Used for |
+|---|---|
+| `border`, `border_focus` | box borders and separators; the focused one |
+| `muted` | dim text: subheaders, hints, placeholders |
+| `title` | the session name and prompt text (always bold) |
+| `selection_bg`, `selection_fg` | the sidebar's keyboard selection, and the dock tab while it has focus |
+| `active_bg`, `active_fg` | the shown window in the sidebar, the dock's current tab |
+| `match_bg`, `match_current_bg` | copy-mode search matches, and the one the cursor is on |
+
+A row style (`selection_*`, `active_*`) and the match colours are drawn inverted while
+their background is `default`; setting a background colour replaces that. A mistake in
+the theme is reported with its name (`theme.border: unknown colour "mauve"`) by
+`dtm reload`, and the running theme stays. See [examples/config.toml](examples/config.toml).
+
 ## Searching windows
 
 `<prefix> f`, or `/` in the focused sidebar, filters the windows by typing
@@ -395,7 +480,9 @@ checked by the test suite to match the built-in defaults.
   `send-key` (sends the key that triggered the binding), and in copy mode `copy-up|down|left|right`,
   `copy-page-up|down`, `copy-half-page-up|down`, `copy-top|bottom`,
   `copy-line-start|end`, `copy-select`, `copy-select-line`, `copy-yank`,
-  `copy-cancel`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|respawn|export|search|leave`.
+  `copy-cancel`, `copy-select-rect`, `copy-search-forward|backward|next|prev`, `copy-word-next|prev|end`,
+  `copy-view-top|middle|bottom`; for the sidebar `focus-sidebar` and `sidebar-down|up|open|kill|rename|move-down|move-up|new|respawn|export|search|leave`.
+  Also `kill-session`, `command-prompt` and `help`. `dtm run` and the `:` prompt take the same names.
 - A config error is reported by `dtm reload` / `<prefix> r` and the running
   configuration stays active.
 
@@ -425,9 +512,10 @@ dtm (client) ──unix socket, length-prefixed bincode──► dtm server
 ```
 src/term/     parser.rs (VT500 state machine), screen.rs (emulator), canvas.rs (frame + differ)
 src/server/   mod.rs (event loop, rendering), state.rs, actions.rs, input.rs, mouse.rs, layout.rs,
-              render.rs, sidebar.rs, copy.rs, groups.rs, search.rs, project.rs, extra.rs (dock, popup), ipc.rs
-src/          keys.rs, action.rs, config.rs, project.rs, protocol.rs, pty.rs, client.rs,
-              procinfo.rs, sysproc.rs (process info on Linux and macOS), fuzzy.rs
+              render.rs, sidebar.rs, copy.rs, groups.rs, search.rs, project.rs, extra.rs (dock, popup),
+              commands.rs (the `:` prompt and `dtm run`), help.rs, ipc.rs
+src/          keys.rs, action.rs, command.rs (the command language), config.rs, theme.rs, project.rs,
+              protocol.rs, pty.rs, client.rs, procinfo.rs, sysproc.rs (process info on Linux and macOS), fuzzy.rs
 plugin/, lua/   Neovim plugin for Ctrl-h/j/k/l navigation
 ```
 

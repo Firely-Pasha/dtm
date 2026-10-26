@@ -173,6 +173,90 @@ const MAX_PASTE: usize = 1 << 20;
 /// Decode as many complete key events as possible from the front of `buf`.
 /// With `flush` set, a trailing incomplete sequence is resolved (a lone ESC
 /// becomes the Escape key) instead of waiting for more bytes.
+/// The bytes a terminal sends for `combo`: the inverse of [`decode`], for `send-keys`.
+/// Keys that are not on the keyboard (paste, mouse) give nothing.
+pub fn encode((key, mods): KeyCombo) -> Vec<u8> {
+    let x = 1 + u8::from(mods & SHIFT != 0) + 2 * u8::from(mods & ALT != 0) + 4 * u8::from(mods & CTRL != 0);
+    // CSI [code ;] mods final, leaving the modifiers out when there are none.
+    let csi = |code: u32, fin: char| -> Vec<u8> {
+        if x == 1 {
+            if fin == '~' { format!("\x1b[{code}~") } else { format!("\x1b[{fin}") }.into_bytes()
+        } else {
+            format!("\x1b[{code};{x}{fin}").into_bytes()
+        }
+    };
+    let ss3 = |fin: char| -> Vec<u8> {
+        if x == 1 { format!("\x1bO{fin}").into_bytes() } else { format!("\x1b[1;{x}{fin}").into_bytes() }
+    };
+    // A key with a plain byte form: Alt adds an ESC in front, other modifiers need CSI u.
+    let plain = |code: u32, bytes: Vec<u8>| -> Vec<u8> {
+        if mods & (CTRL | SHIFT) != 0 && code != 0 {
+            return format!("\x1b[{code};{x}u").into_bytes();
+        }
+        let mut out = Vec::new();
+        if mods & ALT != 0 {
+            out.push(0x1b);
+        }
+        out.extend(bytes);
+        out
+    };
+    match key {
+        Key::Char(c) if mods & CTRL != 0 => {
+            let control = match c {
+                'a'..='z' => Some(c as u8 - b'a' + 1),
+                ' ' => Some(0),
+                '\\' | ']' | '^' | '_' => Some(c as u8 - b'\\' + 0x1c),
+                _ => None,
+            };
+            match control {
+                Some(b) if mods & SHIFT == 0 => {
+                    let mut out = Vec::new();
+                    if mods & ALT != 0 {
+                        out.push(0x1b);
+                    }
+                    out.push(b);
+                    out
+                }
+                _ => format!("\x1b[{};{x}u", c as u32).into_bytes(),
+            }
+        }
+        Key::Char(c) => {
+            let mut out = Vec::new();
+            if mods & ALT != 0 {
+                out.push(0x1b);
+            }
+            out.extend(c.to_string().into_bytes());
+            out
+        }
+        Key::Enter => plain(13, vec![b'\r']),
+        Key::Tab if mods == SHIFT => b"\x1b[Z".to_vec(),
+        Key::Tab => plain(9, vec![b'\t']),
+        Key::Escape => plain(27, vec![0x1b]),
+        Key::Backspace => plain(127, vec![0x7f]),
+        Key::Up => csi(1, 'A'),
+        Key::Down => csi(1, 'B'),
+        Key::Right => csi(1, 'C'),
+        Key::Left => csi(1, 'D'),
+        Key::Home => csi(1, 'H'),
+        Key::End => csi(1, 'F'),
+        Key::Insert => csi(2, '~'),
+        Key::Delete => csi(3, '~'),
+        Key::PageUp => csi(5, '~'),
+        Key::PageDown => csi(6, '~'),
+        Key::F(n @ 1..=4) => ss3(['P', 'Q', 'R', 'S'][n as usize - 1]),
+        Key::F(n) => {
+            let code = match n {
+                5 => 15,
+                6..=10 => 11 + n as u32,
+                11 | 12 => 12 + n as u32,
+                _ => return Vec::new(),
+            };
+            csi(code, '~')
+        }
+        Key::Paste | Key::Mouse(_) | Key::Other => Vec::new(),
+    }
+}
+
 pub fn decode(buf: &mut Vec<u8>, flush: bool) -> Vec<KeyEvent> {
     let mut out = Vec::new();
     let mut i = 0;
@@ -539,4 +623,48 @@ mod tests {
         assert_eq!(keys(b"\x1b[<66;1;1M"), vec![(Key::Other, 0)]);
         assert_eq!(keys(b"\x1b[1;5u"), vec![(Key::Other, 0)]);
     }
+
+    #[test]
+    fn encode_is_the_inverse_of_decode() {
+        let combos: Vec<KeyCombo> = vec![
+            (Key::Char('a'), 0),
+            (Key::Char('A'), 0),
+            (Key::Char('é'), 0),
+            (Key::Char('a'), CTRL),
+            (Key::Char(' '), CTRL),
+            (Key::Char('a'), ALT),
+            (Key::Char('a'), CTRL | ALT),
+            (Key::Enter, 0),
+            (Key::Tab, 0),
+            (Key::Tab, SHIFT),
+            (Key::Tab, CTRL),
+            (Key::Escape, 0),
+            (Key::Backspace, 0),
+            (Key::Up, 0),
+            (Key::Left, CTRL),
+            (Key::Right, SHIFT | ALT),
+            (Key::Home, 0),
+            (Key::End, CTRL),
+            (Key::Insert, 0),
+            (Key::Delete, 0),
+            (Key::PageUp, 0),
+            (Key::PageDown, ALT),
+            (Key::F(1), 0),
+            (Key::F(4), CTRL),
+            (Key::F(5), 0),
+            (Key::F(10), SHIFT),
+            (Key::F(12), 0),
+        ];
+        for combo in combos {
+            let mut bytes = encode(combo);
+            let events = decode(&mut bytes, true);
+            assert_eq!(events.len(), 1, "{combo:?}");
+            assert_eq!(events[0].combo(), combo, "{combo:?} -> {:?}", encode(combo));
+        }
+        assert_eq!(encode((Key::Char('x'), 0)), b"x");
+        assert_eq!(encode((Key::Char('c'), CTRL)), [3]);
+        assert_eq!(encode((Key::Enter, 0)), b"\r");
+        assert!(encode((Key::Other, 0)).is_empty());
+    }
 }
+

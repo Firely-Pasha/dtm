@@ -128,13 +128,26 @@ impl Server {
     }
 
     pub fn new_window(&mut self, sid: SessionId) -> Result<(), String> {
-        let cwd = self.active_cwd(sid);
+        self.new_window_in(sid, None, None, None)
+    }
+
+    /// A new window at the end of the shown window's group, in `cwd` (default: the shown pane's
+    /// directory), with `name` and typing `command` into its shell.
+    pub fn new_window_in(
+        &mut self,
+        sid: SessionId,
+        cwd: Option<PathBuf>,
+        name: Option<String>,
+        command: Option<String>,
+    ) -> Result<(), String> {
+        let cwd = cwd.or_else(|| self.active_cwd(sid));
         let si = self.session_index(sid).ok_or("no session")?;
         let s = &self.sessions[si];
         // The new window goes at the end of the shown window's group.
         let (size, group, wi) = (s.size, s.active_window().group, s.group_windows(s.group_of(s.active)).end);
-        let window = self.make_window(cwd, size, group)?;
-        self.setup_pane(sid, window.active, None);
+        let mut window = self.make_window(cwd, size, group)?;
+        window.pinned_name = name;
+        self.setup_pane(sid, window.active, command);
         let s = &mut self.sessions[si];
         s.windows.insert(wi, window);
         self.refresh_name(si, wi);
@@ -143,7 +156,13 @@ impl Server {
     }
 
     pub fn split(&mut self, sid: SessionId, axis: Axis) -> Result<(), String> {
-        let cwd = self.active_cwd(sid);
+        self.split_in(sid, axis, None, None)
+    }
+
+    /// Split the shown pane; the new one starts in `cwd` (default: the shown pane's directory)
+    /// and types `command` into its shell.
+    pub fn split_in(&mut self, sid: SessionId, axis: Axis, cwd: Option<PathBuf>, command: Option<String>) -> Result<(), String> {
+        let cwd = cwd.or_else(|| self.active_cwd(sid));
         let si = self.session_index(sid).ok_or("no session")?;
         let (active, size, mut tree) = {
             let s = &self.sessions[si];
@@ -161,7 +180,7 @@ impl Server {
             return Err("pane too small to split".into());
         }
         self.spawn_pane(new_id, cwd, self.pane_size((r.w, r.h)))?;
-        self.setup_pane(sid, new_id, None);
+        self.setup_pane(sid, new_id, command);
         let w = self.sessions[si].active_window_mut();
         w.root = tree;
         w.focus(new_id);
@@ -463,6 +482,21 @@ impl Server {
                 self.set_prompt(cid, PromptKind::RenameWindow(id), text, "rename window");
                 Ok(())
             }
+            Action::KillSession => {
+                let label = format!("kill session {}? (y/n)", self.sessions[si].name);
+                self.set_prompt(cid, PromptKind::ConfirmKillSession(sid), String::new(), label);
+                Ok(())
+            }
+            Action::CommandPrompt => {
+                self.set_prompt(cid, PromptKind::Command, String::new(), "command");
+                Ok(())
+            }
+            Action::Help => {
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.help = Some(super::state::HelpState { scroll: 0, query: String::new(), typing: false });
+                }
+                Ok(())
+            }
             Action::NewGroup => {
                 self.set_prompt(cid, PromptKind::NewGroup(sid), String::new(), "new group");
                 Ok(())
@@ -673,8 +707,12 @@ impl Server {
         match copy.apply(cmd, &p.screen) {
             Outcome::Stay => {}
             Outcome::Exit => p.copy = None,
+            Outcome::Search(forward) => {
+                let label = if forward { "search down" } else { "search up" };
+                self.set_prompt(cid, PromptKind::CopySearch(active, forward), String::new(), label);
+            }
+            Outcome::Notice(text) => self.message(cid, text),
             Outcome::Yanked(text) => {
-                p.copy = None;
                 let note = format!("copied {} characters", text.chars().count());
                 if self.cfg.clipboard && !text.is_empty() {
                     let osc = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
@@ -707,7 +745,7 @@ impl Server {
 
     pub(super) fn set_prompt(&mut self, cid: ClientId, kind: PromptKind, text: String, label: impl Into<String>) {
         if let Some(c) = self.clients.get_mut(&cid) {
-            c.prompt = Some(Prompt { kind, text, label: label.into() });
+            c.prompt = Some(Prompt { kind, text, label: label.into(), history: None, tab: None });
         }
     }
 
@@ -868,7 +906,6 @@ impl Server {
         if !sidebar && !(s.dock.focused && s.shown_dock_pane().is_some()) {
             return false;
         }
-        let sid = s.id;
         // The edge facing the panes moves the way the key points.
         let sidebar_left = self.cfg.sidebar.position == Position::Left;
         let grow = match dir {
@@ -877,25 +914,39 @@ impl Server {
             _ => return true,
         };
         let step = |w: u16| if grow { w.saturating_add(n) } else { w.saturating_sub(n) };
-        let sw = self.sidebar_width(c);
-        let dw = self.dock_width(c, s);
-        let cols = c.cols;
+        let (sw, dw) = (self.sidebar_width(c), self.dock_width(c, s));
         if sidebar {
-            let min = if self.cfg.islands { super::MIN_ISLAND_SIDEBAR } else { 4 };
-            let max = cols.saturating_sub(super::MIN_CONTENT + dw).max(min);
-            let w = step(sw).clamp(min, max.min(200));
-            self.sessions[si].sidebar_w = Some(w);
+            self.set_sidebar_width(cid, si, step(sw));
         } else {
-            let max = cols.saturating_sub(sw + super::MIN_CONTENT).max(super::MIN_DOCK);
-            let w = step(dw).clamp(super::MIN_DOCK, max);
-            let d = &mut self.sessions[si].dock;
-            d.width = match d.width {
-                crate::project::Size::Percent(_) => crate::project::Size::Percent(f32::from(w) * 100.0 / f32::from(cols)),
-                crate::project::Size::Cells(_) => crate::project::Size::Cells(w),
-            };
+            self.set_dock_width(cid, si, step(dw));
         }
-        self.update_session_size(sid);
         true
+    }
+
+    /// Set the sidebar's width for the session, within what `cid`'s terminal has room for.
+    pub(super) fn set_sidebar_width(&mut self, cid: ClientId, si: usize, w: u16) {
+        let Some(c) = self.clients.get(&cid) else { return };
+        let dw = self.dock_width(c, &self.sessions[si]);
+        let min = if self.cfg.islands { super::MIN_ISLAND_SIDEBAR } else { 4 };
+        let max = c.cols.saturating_sub(super::MIN_CONTENT + dw).max(min);
+        self.sessions[si].sidebar_w = Some(w.clamp(min, max.min(200)));
+        let sid = self.sessions[si].id;
+        self.update_session_size(sid);
+    }
+
+    /// Set the dock's width, keeping it a percentage or a number of cells as it was.
+    pub(super) fn set_dock_width(&mut self, cid: ClientId, si: usize, w: u16) {
+        let Some(c) = self.clients.get(&cid) else { return };
+        let (sw, cols) = (self.sidebar_width(c), c.cols);
+        let max = cols.saturating_sub(sw + super::MIN_CONTENT).max(super::MIN_DOCK);
+        let w = w.clamp(super::MIN_DOCK, max);
+        let d = &mut self.sessions[si].dock;
+        d.width = match d.width {
+            crate::project::Size::Percent(_) => crate::project::Size::Percent(f32::from(w) * 100.0 / f32::from(cols)),
+            crate::project::Size::Cells(_) => crate::project::Size::Cells(w),
+        };
+        let sid = self.sessions[si].id;
+        self.update_session_size(sid);
     }
 
     fn resize_pane(&mut self, si: usize, dir: Dir, n: u16) {
@@ -929,6 +980,18 @@ impl Server {
                     self.message(cid, format!("duplicate session: {text}"));
                 } else if let Some(s) = self.sessions.iter_mut().find(|s| s.id == id) {
                     s.name = text;
+                }
+            }
+            PromptKind::Command => self.run_command_line(cid, &text),
+            PromptKind::CopySearch(pane, forward) => {
+                if let Some(p) = self.panes.get_mut(&pane)
+                    && let Some(copy) = p.copy.as_mut()
+                {
+                    // An empty term repeats the last one.
+                    let query = if text.is_empty() { copy.search.as_ref().map(|s| s.query.clone()).unwrap_or_default() } else { text };
+                    if !query.is_empty() && !copy.search(&p.screen, query.clone(), forward) {
+                        self.message(cid, format!("no match for {query}"));
+                    }
                 }
             }
             PromptKind::NewGroup(sid) => {

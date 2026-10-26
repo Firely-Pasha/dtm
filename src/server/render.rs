@@ -9,10 +9,17 @@ use super::layout::{PaneId, Rect, Spacing};
 use super::sidebar::truncate;
 use super::state::{Dock, Pane, Window};
 use crate::term::canvas::Canvas;
-use crate::term::cell::{flags, Attrs, Cell, Color};
+use crate::term::cell::{flags, Attrs, Cell};
+use crate::theme::Theme;
 
-const BORDER: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
-const BORDER_ACTIVE: Attrs = Attrs { fg: Color::Idx(2), bg: Color::Default, flags: 0 };
+/// How a window is drawn: the style, whether its panes have the keyboard, and the colours.
+#[derive(Clone, Copy)]
+pub struct RenderOpts<'a> {
+    pub islands: bool,
+    /// False while the sidebar, dock, popup or a prompt has the keyboard, so no pane looks focused.
+    pub focused: bool,
+    pub theme: &'a Theme,
+}
 
 const UP: u8 = 1;
 const DOWN: u8 = 2;
@@ -56,28 +63,24 @@ pub(super) fn draw_box(canvas: &mut Canvas, (x, y, w, h): (usize, usize, usize, 
     canvas.set(x + w - 1, y + h - 1, edge('╯'));
 }
 
-pub(super) fn border_attrs(active: bool) -> Attrs {
-    if active { BORDER_ACTIVE } else { BORDER }
-}
-
 /// A pane's text area inside its layout rect, which is a box in islands style.
 fn area(r: &Rect, islands: bool) -> (usize, usize, usize, usize) {
     let (x, y, w, h) = (r.x as usize, r.y as usize, r.w as usize, r.h as usize);
     if islands { (x + 1, y + 1, w.saturating_sub(2).max(1), h.saturating_sub(2).max(1)) } else { (x, y, w, h) }
 }
 
-/// Render `window`; `focused` is false while the sidebar, dock or popup has the keyboard,
-/// so that no pane looks focused.
-pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16, u16), islands: bool, focused: bool) -> Canvas {
+/// Render `window` at `size`.
+pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16, u16), opts: RenderOpts) -> Canvas {
+    let RenderOpts { islands, focused, theme } = opts;
     let (cols, rows) = (size.0 as usize, size.1 as usize);
     let mut canvas = Canvas::new(cols, rows);
     if window.pending {
         // The placeholder is an island of its own, so the layout does not jump on loading.
         if islands {
-            draw_box(&mut canvas, (0, 0, cols, rows), border_attrs(focused));
+            draw_box(&mut canvas, (0, 0, cols, rows), theme.border(focused));
         }
         let text = "Not loaded";
-        let attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
+        let attrs = theme.muted();
         let (inner_w, inner_h) = if islands { (cols.saturating_sub(2), rows.saturating_sub(2)) } else { (cols, rows) };
         let (ox, oy) = if islands { (1, 1) } else { (0, 0) };
         canvas.put_str(ox + inner_w.saturating_sub(text.len()) / 2, oy + inner_h / 2, text, attrs, inner_w);
@@ -95,11 +98,11 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
         }
         if islands {
             let outer = (r.x as usize, r.y as usize, r.w as usize, r.h as usize);
-            draw_box(&mut canvas, outer, border_attrs(active_box(*id)));
+            draw_box(&mut canvas, outer, theme.border(active_box(*id)));
         }
         let (x, y, w, h) = area(r, islands);
         match &pane.copy {
-            Some(copy) => draw_copy_view(&mut canvas, pane, copy, (x, y, w, h)),
+            Some(copy) => draw_copy_view(&mut canvas, pane, copy, (x, y, w, h), theme),
             None => canvas.blit_screen(&pane.screen, x, y, w, h),
         }
         for yy in y..(y + h).min(rows) {
@@ -112,7 +115,7 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
     }
     if !window.zoomed && !islands {
         // No pane id is 0, so with nothing focused no border is highlighted.
-        draw_borders(&mut canvas, &owner, if focused { window.active } else { 0 });
+        draw_borders(&mut canvas, &owner, if focused { window.active } else { 0 }, theme);
     }
     if let (Some(pane), Some((_, r))) = (
         panes.get(&window.active),
@@ -139,8 +142,6 @@ pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16,
     canvas
 }
 
-const DIM: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
-const TAB_ACTIVE: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
 
 /// The dock's tab row: (entry, first column, end column) of each tab shown,
 /// scrolled so the active one is visible.
@@ -164,11 +165,11 @@ pub fn dock_tabs(names: &[&str], active: usize, width: usize) -> Vec<(usize, usi
     out
 }
 
-pub(super) fn draw_pane_view(canvas: &mut Canvas, pane: &Pane, area: (usize, usize, usize, usize), focused: bool) -> Option<(usize, usize)> {
+pub(super) fn draw_pane_view(canvas: &mut Canvas, pane: &Pane, area: (usize, usize, usize, usize), focused: bool, theme: &Theme) -> Option<(usize, usize)> {
     let (x, y, w, h) = area;
     match &pane.copy {
         Some(copy) => {
-            draw_copy_view(canvas, pane, copy, area);
+            draw_copy_view(canvas, pane, copy, area, theme);
             (focused && copy.cx < w && copy.cy < h).then_some((x + copy.cx, y + copy.cy))
         }
         None => {
@@ -180,16 +181,16 @@ pub(super) fn draw_pane_view(canvas: &mut Canvas, pane: &Pane, area: (usize, usi
 }
 
 /// Draw the dock into columns `x..x+w`; returns the cursor when it has focus.
-/// `sep_left` puts the separator line on the dock's left edge.
+/// `sep_left` puts the separator line on the dock's left edge; `opts.focused` says whether the dock has the keyboard.
 pub fn draw_dock(
     canvas: &mut Canvas,
     (x, w): (usize, usize),
     sep_left: bool,
     dock: &Dock,
     panes: &HashMap<PaneId, Pane>,
-    focused: bool,
-    islands: bool,
+    opts: RenderOpts,
 ) -> Option<(usize, usize)> {
+    let RenderOpts { islands, focused, theme } = opts;
     let rows = canvas.rows;
     if w < 2 {
         return None;
@@ -199,7 +200,7 @@ pub fn draw_dock(
     let mut pw = w - 1;
     // Rows above the pane (the tab row, and in islands the box's top border) and below it.
     let (top, bottom) = if islands { (1, 1) } else { (0, 0) };
-    let sep = if focused { BORDER_ACTIVE } else { BORDER };
+    let sep = theme.border(focused);
     if islands {
         if w < 5 || rows < 4 {
             return None;
@@ -215,9 +216,9 @@ pub fn draw_dock(
     let names: Vec<&str> = dock.entries.iter().map(|e| e.name.as_str()).collect();
     for (i, x0, x1) in dock_tabs(&names, dock.active, pw) {
         let attrs = if i == dock.active {
-            if focused { Attrs { flags: flags::REVERSE | flags::BOLD, ..TAB_ACTIVE } } else { TAB_ACTIVE }
+            if focused { theme.selection() } else { theme.active() }
         } else {
-            DIM
+            theme.muted()
         };
         canvas.fill(px + x0, top, x1 - x0, 1, Cell::blank(attrs));
         canvas.put_str(px + x0, top, &format!(" {} ", truncate(names[i], x1 - x0 - 2)), attrs, x1 - x0);
@@ -227,42 +228,77 @@ pub fn draw_dock(
     }
     let body = top + 1;
     if dock.entries.is_empty() {
-        canvas.put_str(px + 1, body, "no panes", DIM, pw.saturating_sub(1));
-        canvas.put_str(px + 1, body + 1, "prefix A adds one", DIM, pw.saturating_sub(1));
+        canvas.put_str(px + 1, body, "no panes", theme.muted(), pw.saturating_sub(1));
+        canvas.put_str(px + 1, body + 1, "prefix A adds one", theme.muted(), pw.saturating_sub(1));
         return None;
     }
     match dock.entries.get(dock.active).and_then(|e| e.pane).and_then(|p| panes.get(&p)) {
-        Some(pane) => draw_pane_view(canvas, pane, (px, body, pw, rows - body - bottom), focused),
+        Some(pane) => draw_pane_view(canvas, pane, (px, body, pw, rows - body - bottom), focused, theme),
         None => {
-            canvas.put_str(px + 1, body, "starting…", DIM, pw.saturating_sub(1));
+            canvas.put_str(px + 1, body, "starting…", theme.muted(), pw.saturating_sub(1));
             None
         }
     }
 }
 
 /// Draw the popup box at `ox + outer`; returns the cursor (`focused` is false behind a prompt).
-pub fn draw_popup(canvas: &mut Canvas, ox: usize, outer: Rect, pane: Option<&Pane>, focused: bool) -> Option<(usize, usize)> {
+pub fn draw_popup(canvas: &mut Canvas, ox: usize, outer: Rect, pane: Option<&Pane>, focused: bool, theme: &Theme) -> Option<(usize, usize)> {
     let (x, y, w, h) = (ox + outer.x as usize, outer.y as usize, outer.w as usize, outer.h as usize);
     if w < 3 || h < 3 {
         return None;
     }
     canvas.fill(x, y, w, h, Cell::BLANK);
-    let border = border_attrs(focused);
+    let border = theme.border(focused);
     draw_box(canvas, (x, y, w, h), border);
     if w > 12 {
         canvas.put_str(x + 2, y, " popup ", border, w - 4);
     }
-    draw_pane_view(canvas, pane?, (x + 1, y + 1, w - 2, h - 2), focused)
+    draw_pane_view(canvas, pane?, (x + 1, y + 1, w - 2, h - 2), focused, theme)
+}
+
+/// How many list lines the help box shows on a screen `rows` high.
+pub fn help_body_rows(rows: usize) -> usize {
+    rows.saturating_sub(5).max(1)
+}
+
+/// Draw the key list as a box over the screen, from line `scroll` on. Lines without an
+/// indent are headings.
+/// `query` is the search text and whether it is being typed.
+pub fn draw_help(canvas: &mut Canvas, lines: &[String], scroll: usize, query: (&str, bool), theme: &Theme) {
+    let (cols, rows) = (canvas.cols, canvas.rows);
+    if cols < 24 || rows < 8 {
+        return;
+    }
+    let (x, y, w, h) = (2, 1, cols - 4, rows - 2);
+    canvas.fill(x, y, w, h, Cell::BLANK);
+    draw_box(canvas, (x, y, w, h), theme.border(true));
+    canvas.put_str(x + 2, y, " help ", theme.title(), w - 4);
+    let body = help_body_rows(rows);
+    for (i, line) in lines.iter().skip(scroll).take(body).enumerate() {
+        let attrs = if line.starts_with(' ') { Attrs::DEFAULT } else { theme.title() };
+        canvas.put_str(x + 2, y + 1 + i, line, attrs, w - 4);
+    }
+    let shown_to = (scroll + body).min(lines.len());
+    let hint = match query {
+        (q, true) => format!("/{q}   enter keep · esc clear"),
+        ("", false) => format!("/ search · j/k scroll · space/b page · q close · {shown_to}/{}", lines.len()),
+        (q, false) => format!("filter: {q} · / edit · esc clear · q close · {shown_to}/{}", lines.len()),
+    };
+    canvas.put_str(x + 2, y + h - 2, &hint, theme.muted(), w - 4);
+    if query.1 {
+        // The cursor sits after what is typed.
+        canvas.cursor = Some((x + 2 + 1 + query.0.chars().count(), y + h - 2));
+    }
 }
 
 /// A small label in the middle of `area` (x, y, w, h), e.g. the size of a pane being resized.
-pub fn draw_badge(canvas: &mut Canvas, (x, y, w, h): (usize, usize, usize, usize), text: &str) {
+pub fn draw_badge(canvas: &mut Canvas, (x, y, w, h): (usize, usize, usize, usize), text: &str, theme: &Theme) {
     let label = format!(" {text} ");
     let lw = label.width();
     if w < lw || h == 0 {
         return;
     }
-    let attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE | flags::BOLD };
+    let attrs = theme.selection();
     canvas.put_str(x + (w - lw) / 2, y + h / 2, &label, attrs, lw);
 }
 
@@ -300,29 +336,42 @@ fn tail(text: &str, width: usize) -> String {
     out.iter().rev().collect()
 }
 
-/// Draw a prompt as a box in the middle of the screen; returns the cursor of a text prompt.
-pub fn draw_prompt(canvas: &mut Canvas, label: &str, text: &str, confirm: bool) -> Option<(usize, usize)> {
+/// Suggestions listed under a prompt's input: the names, and the one chosen. A prompt that
+/// has a list keeps room for it even when it is empty, so the box never changes size.
+pub type Suggestions<'a> = Option<(&'a [String], Option<usize>)>;
+
+/// The most suggestions a prompt lists at once.
+const MAX_SUGGESTIONS: usize = 8;
+
+/// Draw a prompt as a box in the middle of the screen, with `suggest` listed under its input;
+/// returns the cursor of a text prompt.
+pub fn draw_prompt(canvas: &mut Canvas, label: &str, text: &str, confirm: bool, suggest: Suggestions, theme: &Theme) -> Option<(usize, usize)> {
     let (cols, rows) = (canvas.cols, canvas.rows);
     let label = label.trim_end_matches(" (y/n)");
     let hint = if confirm { "y confirm  ·  n cancel" } else { "enter confirm  ·  esc cancel" };
     let max_inner = cols.saturating_sub(8).clamp(8, 64);
     let inner = (label.width().max(hint.width()).max(if confirm { 0 } else { 36 }) + 2).clamp(8, max_inner);
     let lines = wrap(label, inner - 2);
+    // Suggestions take rows only while the box still fits on the screen.
+    let body0 = lines.len() + usize::from(!confirm) * 2 + 2;
+    let listed = suggest.filter(|_| !confirm).map_or(&[][..], |(names, _)| names);
+    let reserved = if confirm || suggest.is_none() { 0 } else { MAX_SUGGESTIONS };
+    let n = reserved.min(rows.saturating_sub(body0 + 2));
+    let body = body0 + n;
     // Padding rows are dropped when the screen is short.
-    let body = lines.len() + usize::from(!confirm) * 2 + 2;
     let pad = usize::from(rows >= body + 4);
     let h = body + 2 + pad * 2;
     let w = inner + 2;
     if h > rows || w > cols {
         // Too small for the box: a bar on the bottom row.
-        let attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
+        let attrs = theme.active();
         let line = if confirm { format!(" {label}  (y/n)") } else { format!(" {label}: {text}") };
         canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
         let used = canvas.put_str(0, rows - 1, &line, attrs, cols);
         return (!confirm).then_some((used.min(cols.saturating_sub(1)), rows - 1));
     }
     let (x, y) = ((cols - w) / 2, (rows - h) / 2);
-    let edge = |ch| Cell { ch, width: 1, attrs: BORDER_ACTIVE };
+    let edge = |ch| Cell { ch, width: 1, attrs: theme.border(true) };
     canvas.fill(x, y, w, h, Cell::BLANK);
     for dx in 1..w - 1 {
         canvas.set(x + dx, y, edge('─'));
@@ -336,7 +385,7 @@ pub fn draw_prompt(canvas: &mut Canvas, label: &str, text: &str, confirm: bool) 
     canvas.set(x + w - 1, y, edge('╮'));
     canvas.set(x, y + h - 1, edge('╰'));
     canvas.set(x + w - 1, y + h - 1, edge('╯'));
-    let bold = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD };
+    let bold = theme.title();
     let (tx, mut ty) = (x + 2, y + 1 + pad);
     for l in &lines {
         canvas.put_str(tx, ty, l, bold, inner - 2);
@@ -346,12 +395,23 @@ pub fn draw_prompt(canvas: &mut Canvas, label: &str, text: &str, confirm: bool) 
     let mut cursor = None;
     if !confirm {
         let shown = tail(text, inner - 5);
-        canvas.put_str(tx, ty, "›", BORDER_ACTIVE, 1);
+        canvas.put_str(tx, ty, "›", theme.border(true), 1);
         let used = canvas.put_str(tx + 2, ty, &shown, Attrs::DEFAULT, inner - 4);
         cursor = Some((tx + 2 + used, ty));
-        ty += 2;
+        ty += 1;
+        // The window of suggestions that keeps the chosen one in view.
+        let chosen = suggest.and_then(|(_, c)| c);
+        let first = chosen.map_or(0, |c| (c + 1).saturating_sub(n));
+        for (i, name) in listed.iter().enumerate().skip(first).take(n) {
+            let attrs = if Some(i) == chosen { theme.selection() } else { theme.muted() };
+            canvas.fill(tx, ty, inner - 2, 1, Cell::blank(attrs));
+            canvas.put_str(tx + 2, ty, name, attrs, inner - 4);
+            ty += 1;
+        }
     }
-    canvas.put_str(tx, ty, hint, DIM, inner - 2);
+    // The hint sticks to the bottom of the box, however many suggestions are listed above it.
+    let ty = y + h - 2 - pad;
+    canvas.put_str(tx, ty, hint, theme.muted(), inner - 2);
     // The keys themselves stand out.
     let (first, second) = if confirm { (1, 1) } else { ("enter".len(), "esc".len()) };
     let second_at = tx + hint.find("·").map_or(0, |i| hint[..i].width() + "·  ".width());
@@ -369,16 +429,25 @@ fn restyle(canvas: &mut Canvas, x: usize, y: usize, n: usize, attrs: Attrs) {
 }
 
 /// Draw a pane scrolled back in copy mode, with the selection highlighted.
-fn draw_copy_view(canvas: &mut Canvas, pane: &Pane, copy: &CopyMode, (x, y, w, h): (usize, usize, usize, usize)) {
+fn draw_copy_view(canvas: &mut Canvas, pane: &Pane, copy: &CopyMode, (x, y, w, h): (usize, usize, usize, usize), theme: &Theme) {
     let screen = &pane.screen;
     let top = copy.top(screen);
     let sel = copy.selection(screen);
     let rows: Vec<Vec<Cell>> = (0..h)
         .map(|row| {
             let line = screen.abs_line(top + row);
+            // Search matches on this line; the one under the cursor is the current one.
+            let found = match (&copy.search, line) {
+                (Some(s), Some(l)) => super::copy::find_in_line(l, &s.query),
+                _ => Vec::new(),
+            };
             (0..w)
                 .map(|col| {
                     let mut cell = line.and_then(|l| l.get(col)).copied().unwrap_or(Cell::BLANK);
+                    if let Some(m) = found.iter().find(|m| (m.0..=m.1).contains(&col)) {
+                        let current = top + row == copy.cursor_abs(screen).0 && m.0 == copy.cx;
+                        cell.attrs = theme.found(current);
+                    }
                     if copy.is_selected(sel, top + row, col) {
                         cell.attrs.flags ^= flags::REVERSE;
                     }
@@ -388,14 +457,14 @@ fn draw_copy_view(canvas: &mut Canvas, pane: &Pane, copy: &CopyMode, (x, y, w, h
         })
         .collect();
     canvas.blit_cells(&rows, x, y);
-    let label = format!("[copy {}/{}]", copy.offset, screen.history_len());
+    let query = copy.search.as_ref().map(|s| format!(" {}{}", if s.forward { '/' } else { '?' }, s.query)).unwrap_or_default();
+    let label = format!("[copy {}/{}{query}]", copy.offset, screen.history_len());
     if label.len() < w {
-        let attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
-        canvas.put_str(x + w - label.len(), y, &label, attrs, label.len());
+        canvas.put_str(x + w - label.len(), y, &label, theme.active(), label.len());
     }
 }
 
-fn draw_borders(canvas: &mut Canvas, owner: &[Option<PaneId>], active: PaneId) {
+fn draw_borders(canvas: &mut Canvas, owner: &[Option<PaneId>], active: PaneId, theme: &Theme) {
     let (cols, rows) = (canvas.cols, canvas.rows);
     let is_border = |x: isize, y: isize| -> bool {
         x >= 0 && y >= 0 && (x as usize) < cols && (y as usize) < rows && owner[y as usize * cols + x as usize].is_none()
@@ -426,7 +495,7 @@ fn draw_borders(canvas: &mut Canvas, owner: &[Option<PaneId>], active: PaneId) {
                 mask |= RIGHT;
             }
             let touches_active = is_active(x, y - 1) || is_active(x, y + 1) || is_active(x - 1, y) || is_active(x + 1, y);
-            let attrs = if touches_active { BORDER_ACTIVE } else { BORDER };
+            let attrs = theme.border(touches_active);
             canvas.set(x as usize, y as usize, Cell { ch: border_glyph(mask), width: 1, attrs });
         }
     }
@@ -437,6 +506,12 @@ mod tests {
     use super::*;
     use crate::pty::{Pty, SpawnOpts};
     use crate::server::layout::{Axis, Node};
+
+    static THEME: Theme = Theme::DEFAULT;
+
+    fn opts(islands: bool) -> RenderOpts<'static> {
+        RenderOpts { islands, focused: true, theme: &THEME }
+    }
 
     async fn pane(id: PaneId, cols: u16, rows: u16, text: &str) -> Pane {
         let pty = Pty::spawn(
@@ -474,14 +549,14 @@ mod tests {
         let mut panes = HashMap::new();
         panes.insert(1, pane(1, 2, 2, "ab\r\ncd").await);
         panes.insert(2, pane(2, 2, 2, "ef").await);
-        let c = render_window(&w, &panes, (9, 4), true, true);
+        let c = render_window(&w, &panes, (9, 4), opts(true));
         assert_eq!(c.row_text(0), "╭──╮ ╭──╮");
         assert_eq!(c.row_text(1), "│ab│ │ef│");
         assert_eq!(c.row_text(2), "│cd│ │  │");
         assert_eq!(c.row_text(3), "╰──╯ ╰──╯");
         // the focused pane's box is highlighted, the other one is not
-        assert_eq!(c.cell(5, 0).attrs, BORDER_ACTIVE);
-        assert_eq!(c.cell(0, 0).attrs, BORDER);
+        assert_eq!(c.cell(5, 0).attrs, Theme::DEFAULT.border(true));
+        assert_eq!(c.cell(0, 0).attrs, Theme::DEFAULT.border(false));
         assert_eq!(c.cursor, Some((7, 1)));
     }
 
@@ -492,7 +567,7 @@ mod tests {
         let mut panes = HashMap::new();
         panes.insert(1, pane(1, 4, 1, "up").await);
         panes.insert(2, pane(2, 4, 1, "dn").await);
-        let c = render_window(&w, &panes, (6, 6), true, true);
+        let c = render_window(&w, &panes, (6, 6), opts(true));
         assert_eq!(c.row_text(0), "╭────╮");
         assert_eq!(c.row_text(1), "│up  │");
         assert_eq!(c.row_text(2), "╰────╯");
@@ -512,10 +587,10 @@ mod tests {
         panes.insert(1, pane(1, 4, 5, "one").await);
         panes.insert(2, pane(2, 4, 2, "two").await);
         panes.insert(3, pane(3, 4, 2, "three").await);
-        let c = render_window(&w, &panes, (9, 5), false, true);
+        let c = render_window(&w, &panes, (9, 5), opts(false));
         let rows: Vec<String> = (0..5).map(|y| c.row_text(y)).collect();
         assert_eq!(rows, vec!["one │two", "    │", "    ├────", "    │thre", "    │e"]);
-        assert_eq!(c.cell(4, 0).attrs, BORDER_ACTIVE);
+        assert_eq!(c.cell(4, 0).attrs, Theme::DEFAULT.border(true));
         assert_eq!(c.cursor, Some((3, 0)));
     }
 
@@ -532,7 +607,7 @@ mod tests {
         p.copy = Some(copy);
         let mut panes = HashMap::new();
         panes.insert(1, p);
-        let c = render_window(&w, &panes, (14, 2), false, true);
+        let c = render_window(&w, &panes, (14, 2), opts(false));
         assert_eq!(c.row_text(0), "aaa [copy 2/2]");
         assert_eq!(c.row_text(1), "bbb");
         assert!(c.cell(0, 0).attrs.has(flags::REVERSE) && c.cell(1, 0).attrs.has(flags::REVERSE));
@@ -558,7 +633,7 @@ mod tests {
         let mut panes = HashMap::new();
         panes.insert(1, pane(1, 3, 3, "left").await);
         panes.insert(2, pane(2, 9, 3, "zoom").await);
-        let c = render_window(&w, &panes, (9, 3), false, true);
+        let c = render_window(&w, &panes, (9, 3), opts(false));
         assert_eq!(c.row_text(0), "zoom");
         assert!(!(0..3).any(|y| c.row_text(y).contains('│')));
     }

@@ -4,7 +4,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::Position;
 use crate::term::canvas::Canvas;
-use crate::term::cell::{flags, Attrs, Cell, Color};
+use crate::term::cell::{flags, Attrs, Cell};
+use crate::theme::Theme;
 
 pub struct Item {
     pub label: String,
@@ -53,6 +54,7 @@ pub struct SidebarView {
     pub focused: bool,
     /// Drawn as a rounded box (with the gap column facing the panes) instead of a column.
     pub islands: bool,
+    pub theme: Theme,
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -91,12 +93,6 @@ pub fn item_at(items: usize, active_idx: usize, rows: usize, has_footer: bool, i
     (row < FIRST_ITEM_ROW + capacity && idx < items).then_some(idx)
 }
 
-const BOLD: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD };
-const DIM: Attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
-/// Colour-independent, so it stays readable in any terminal theme.
-const SELECTED: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::BOLD | flags::REVERSE };
-const FOCUS_SEP: Attrs = Attrs { fg: Color::Idx(2), bg: Color::Default, flags: 0 };
-const REVERSE: Attrs = Attrs { fg: Color::Default, bg: Color::Default, flags: flags::REVERSE };
 
 /// Draw the sidebar into columns `x0..x0+width` of the full height of `canvas`.
 pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, view: &SidebarView) {
@@ -104,6 +100,8 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
         return;
     }
     let rows = canvas.rows;
+    let theme = &view.theme;
+    let (bold, dim) = (theme.title(), theme.muted());
     let (sep_x, text_x) = match position {
         Position::Left => (x0 + width - 1, x0),
         Position::Right => (x0, x0 + 1),
@@ -118,29 +116,29 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
             return;
         }
         let box_x = if position == Position::Left { x0 } else { x0 + 1 };
-        super::render::draw_box(canvas, (box_x, 0, width - 1, rows), if view.focused { FOCUS_SEP } else { DIM });
+        super::render::draw_box(canvas, (box_x, 0, width - 1, rows), theme.border(view.focused));
         text_x = box_x + 1;
         text_w = width - 3;
         // The session's name sits in the top border.
         let title = format!(" {} ", truncate(&view.header, text_w.saturating_sub(3)));
-        canvas.put_str(box_x + 1, 0, &title, BOLD, text_w);
+        canvas.put_str(box_x + 1, 0, &title, bold, text_w);
     } else {
         for y in 0..rows {
-            canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: if view.focused { FOCUS_SEP } else { DIM } });
+            canvas.set(sep_x, y, Cell { ch: '│', width: 1, attrs: theme.border(view.focused) });
         }
     }
     if rows == 0 {
         return;
     }
     if !view.islands {
-        canvas.put_str(text_x, 0, &format!(" {}", truncate(&view.header, text_w.saturating_sub(1))), BOLD, text_w);
+        canvas.put_str(text_x, 0, &format!(" {}", truncate(&view.header, text_w.saturating_sub(1))), bold, text_w);
     }
     if rows > 1 {
         let tag_w = view.subtag.map_or(0, |_| 2);
         let title = truncate(&view.subheader, text_w.saturating_sub(1 + tag_w));
-        canvas.put_str(text_x, 1, &format!(" {title}"), DIM, text_w);
+        canvas.put_str(text_x, 1, &format!(" {title}"), dim, text_w);
         if let Some(tag) = view.subtag.filter(|_| text_w > 2) {
-            canvas.put_str(text_x + text_w - 2, 1, &tag.to_string(), DIM, 1);
+            canvas.put_str(text_x + text_w - 2, 1, &tag.to_string(), dim, 1);
         }
     }
     let footer_rows = usize::from(view.footer.is_some());
@@ -154,19 +152,19 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
             // Drawn like the subheader: dim, the tag at the right edge.
             canvas.fill(text_x, y, text_w, 1, Cell::BLANK);
             let label_w = text_w.saturating_sub(item.marks.width() + 2);
-            canvas.put_str(text_x, y, &format!(" {}", truncate(&item.label, label_w)), DIM, text_w);
+            canvas.put_str(text_x, y, &format!(" {}", truncate(&item.label, label_w)), dim, text_w);
             if text_w > 2 {
-                canvas.put_str(text_x + text_w - item.marks.width() - 1, y, &item.marks, DIM, item.marks.width());
+                canvas.put_str(text_x + text_w - item.marks.width() - 1, y, &item.marks, dim, item.marks.width());
             }
             continue;
         }
         let attrs = if item.selected {
-            SELECTED
+            theme.selection()
         } else if item.active && view.focused {
-            // Only the selection is inverted while navigating.
-            BOLD
+            // Only the selection is highlighted while navigating.
+            Attrs { flags: flags::BOLD, ..Attrs::DEFAULT }
         } else if item.active {
-            REVERSE
+            theme.active()
         } else {
             Attrs::DEFAULT
         };
@@ -181,7 +179,7 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
     }
     if let Some(f) = &view.footer {
         let y = rows - 1 - bottom;
-        let attrs = if f.prompt { REVERSE } else { DIM };
+        let attrs = if f.prompt { theme.active() } else { dim };
         canvas.fill(text_x, y, text_w, 1, Cell::blank(attrs));
         // The leading space goes first when the text only just fits (a narrow islands box).
         let lead = if f.text.width() < text_w { " " } else { "" };
@@ -193,13 +191,14 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::term::cell::Color;
 
     fn item(label: &str, marks: &str, active: bool) -> Item {
         Item { label: label.into(), marks: marks.into(), active, selected: false, heading: false }
     }
 
     fn view(items: Vec<Item>) -> SidebarView {
-        SidebarView { header: "main".into(), subheader: "windows".into(), subtag: None, items, footer: None, focused: false, islands: false }
+        SidebarView { header: "main".into(), subheader: "windows".into(), subtag: None, items, footer: None, focused: false, islands: false, theme: Theme::DEFAULT }
     }
 
     #[test]
@@ -288,7 +287,7 @@ mod tests {
         let mut c = Canvas::new(14, 5);
         draw(&mut c, 0, 14, Position::Left, &view(vec![Item::heading("code".into(), 'g'), item("1 sh", "", true)]));
         assert_eq!(c.row_text(2), " code      g │");
-        assert_eq!(c.cell(1, 2).attrs, DIM);
+        assert_eq!(c.cell(1, 2).attrs, Theme::DEFAULT.muted());
         assert!(c.cell(1, 3).attrs.has(flags::REVERSE));
         let mut v = view(vec![]);
         v.subtag = Some('m');

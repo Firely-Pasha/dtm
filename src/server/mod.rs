@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod copy;
 pub mod extra;
+pub mod help;
 pub mod groups;
 pub mod input;
 pub mod ipc;
@@ -13,6 +14,7 @@ pub mod mouse;
 pub mod project;
 pub mod layout;
 pub mod render;
+pub mod commands;
 pub mod search;
 pub mod sidebar;
 pub mod state;
@@ -32,8 +34,9 @@ use crate::paths;
 use crate::protocol::{decode, encode, framed, AttachMode, ClientMsg, ServerMsg, SessionInfo};
 use crate::pty::PtyEvent;
 use crate::term::canvas::Canvas;
-use crate::term::cell::{Attrs, Cell, Color};
+use crate::term::cell::Cell;
 use layout::PaneId;
+use render::RenderOpts;
 use sidebar::{Footer, Item, Line, SidebarView};
 use state::{Client, ClientId, Pane, Session, SessionId};
 
@@ -72,6 +75,8 @@ pub struct Server {
     /// Text from the last copy-mode yank.
     pub paste_text: String,
     had_session: bool,
+    /// Lines run from the `:` prompt, oldest first.
+    pub command_history: Vec<String>,
     next_pane: u32,
     next_window: u32,
     next_session: u32,
@@ -171,6 +176,7 @@ impl Server {
             shutdown: false,
             paste_text: String::new(),
             had_session: false,
+            command_history: Vec::new(),
             next_pane: 1,
             next_window: 1,
             next_session: 1,
@@ -266,6 +272,10 @@ impl Server {
             },
             ClientMsg::Query { pane, format } => match self.query_ipc(pane, &format) {
                 Ok(text) => self.send(cid, ServerMsg::Text(text)),
+                Err(e) => self.send(cid, ServerMsg::Error(e)),
+            },
+            ClientMsg::Command { session, pane, line } => match self.command_ipc(session.as_deref(), pane, &line) {
+                Ok(()) => self.send(cid, ServerMsg::Ok),
                 Err(e) => self.send(cid, ServerMsg::Error(e)),
             },
         }
@@ -673,12 +683,19 @@ impl Server {
         for c in self.clients.values() {
             let Some(s) = c.session.and_then(|sid| self.sessions.iter().find(|s| s.id == sid)) else { continue };
             // No pane looks focused while the sidebar, the dock or the popup has the keyboard.
-            // (A prompt takes the focus itself.)
-            let focused = c.sidebar_focus.is_none() && !self.extra_focused(s) && c.prompt.is_none();
+            // (A prompt or the help takes the focus itself.)
+            let focused = c.sidebar_focus.is_none() && !self.extra_focused(s) && !c.overlay();
             let content = contents.entry((s.id, focused)).or_insert_with(|| {
-                render::render_window(s.active_window(), &self.panes, s.size, self.cfg.islands, focused)
+                render::render_window(
+                    s.active_window(),
+                    &self.panes,
+                    s.size,
+                    render::RenderOpts { islands: self.cfg.islands, focused, theme: &self.cfg.theme },
+                )
             });
-            frames.push((c.id, self.compose(c, s, content)));
+            let mut canvas = self.compose(c, s, content);
+            self.draw_help_box(c, &mut canvas);
+            frames.push((c.id, canvas));
         }
         for (cid, canvas) in frames {
             let Some(c) = self.clients.get_mut(&cid) else { continue };
@@ -741,7 +758,7 @@ impl Server {
 
     fn sidebar_view(&self, c: &Client, s: &Session) -> SidebarView {
         // While a prompt is up, it has the focus, not the sidebar behind it.
-        let sidebar_focused = c.sidebar_focus.is_some() && c.prompt.is_none();
+        let sidebar_focused = c.sidebar_focus.is_some() && !c.overlay();
         let mut subtag = None;
         let (header, subheader, items) = match c.sidebar_mode {
             SidebarMode::Windows => {
@@ -820,7 +837,7 @@ impl Server {
             }
             None => None,
         };
-        SidebarView { header, subheader, subtag, items, footer, focused: sidebar_focused, islands: self.cfg.islands }
+        SidebarView { header, subheader, subtag, items, footer, focused: sidebar_focused, islands: self.cfg.islands, theme: self.cfg.theme }
     }
 
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {
@@ -844,15 +861,15 @@ impl Server {
         canvas.mouse = self.cfg.mouse;
         canvas.cursor = content.cursor.filter(|&(x, y)| x < cw && y < rows).map(|(x, y)| (x + content_x, y));
         if dw > 0 {
-            let focused = s.dock.focused && s.shown_popup().is_none() && c.prompt.is_none();
-            let cur = render::draw_dock(&mut canvas, (dock_x, dw), self.cfg.sidebar.position == Position::Left, &s.dock, &self.panes, focused, self.cfg.islands);
+            let focused = s.dock.focused && s.shown_popup().is_none() && !c.overlay();
+            let cur = render::draw_dock(&mut canvas, (dock_x, dw), self.cfg.sidebar.position == Position::Left, &s.dock, &self.panes, RenderOpts { islands: self.cfg.islands, focused, theme: &self.cfg.theme });
             if focused {
                 canvas.cursor = cur;
             }
         }
         if s.shown_popup().is_some() {
             let pane = s.popup.and_then(|p| self.panes.get(&p));
-            canvas.cursor = render::draw_popup(&mut canvas, content_x, self.popup_outer(s.size), pane, c.prompt.is_none());
+            canvas.cursor = render::draw_popup(&mut canvas, content_x, self.popup_outer(s.size), pane, !c.overlay(), &self.cfg.theme);
         }
         if self.extra_focused(s)
             && let Some(p) = self.focused_pane_in(s).and_then(|id| self.panes.get(&id))
@@ -867,7 +884,7 @@ impl Server {
             sidebar::draw(&mut canvas, sidebar_x, sw, self.cfg.sidebar.position, &view);
         } else if let Some(f) = &view.footer {
             // No sidebar: show messages on the bottom row.
-            let attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
+            let attrs = self.cfg.theme.muted();
             canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
             canvas.put_str(0, rows - 1, &f.text, attrs, cols);
         }
@@ -888,7 +905,7 @@ impl Server {
                 })
             };
             if let Some((text, x, y, bw, bh)) = badge {
-                render::draw_badge(&mut canvas, (x, y, bw, bh), &text);
+                render::draw_badge(&mut canvas, (x, y, bw, bh), &text, &self.cfg.theme);
             }
         }
         if c.sidebar_max && c.sidebar_focus.is_some() {
@@ -898,10 +915,22 @@ impl Server {
         canvas
     }
 
+    /// The key list, over everything.
+    fn draw_help_box(&self, c: &Client, canvas: &mut Canvas) {
+        if let Some(h) = &c.help {
+            let lines = self.help_view(h);
+            canvas.cursor = None;
+            render::draw_help(canvas, &lines, h.scroll, (&h.query, h.typing), &self.cfg.theme);
+        }
+    }
+
     /// Prompts are a box in the middle of the screen, over everything.
     fn draw_prompt_box(&self, c: &Client, canvas: &mut Canvas) {
         if let Some(p) = &c.prompt {
-            canvas.cursor = render::draw_prompt(canvas, &p.label, &p.text, p.kind.is_confirm());
+            // The `:` prompt lists the names its input could become.
+            let names = (p.kind == state::PromptKind::Command).then(|| suggestions_for(p).unwrap_or_default());
+            let suggest = names.as_ref().map(|(names, chosen)| (names.as_slice(), *chosen));
+            canvas.cursor = render::draw_prompt(canvas, &p.label, &p.text, p.kind.is_confirm(), suggest, &self.cfg.theme);
         }
     }
 
@@ -909,18 +938,31 @@ impl Server {
     fn compose_maximized(&self, c: &Client, pane: &Pane) -> Canvas {
         let (cols, rows) = (c.cols as usize, c.rows as usize);
         let mut canvas = Canvas::new(cols, rows);
-        canvas.cursor = render::draw_pane_view(&mut canvas, pane, (0, 0, cols, rows), true);
+        canvas.cursor = render::draw_pane_view(&mut canvas, pane, (0, 0, cols, rows), true, &self.cfg.theme);
         let m = pane.screen.modes();
         canvas.app_cursor = m.app_cursor;
         canvas.bracketed_paste = m.bracketed_paste;
         canvas.cursor_style = m.cursor_style;
         canvas.mouse = self.cfg.mouse;
         if let Some((text, _)) = &c.message {
-            let attrs = Attrs { fg: Color::Idx(8), bg: Color::Default, flags: 0 };
+            let attrs = self.cfg.theme.muted();
             canvas.fill(0, rows - 1, cols, 1, Cell::blank(attrs));
             canvas.put_str(0, rows - 1, text, attrs, cols);
         }
         self.draw_prompt_box(c, &mut canvas);
         canvas
     }
+}
+
+/// The names a `:` prompt suggests: the ones it is cycling through, or those that complete
+/// what is typed (only while it is still the first word).
+fn suggestions_for(p: &state::Prompt) -> Option<(Vec<String>, Option<usize>)> {
+    if let Some(t) = &p.tab {
+        return Some((t.candidates.clone(), t.shown));
+    }
+    if p.text.is_empty() || p.text.contains(char::is_whitespace) {
+        return None;
+    }
+    let names = commands::completions(&p.text);
+    (!names.is_empty() && names != [p.text.clone()]).then_some((names, None))
 }

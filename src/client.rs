@@ -19,7 +19,7 @@ use crate::{paths, tty};
 /// Enter the alternate screen and disable autowrap (the server relies on it).
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[?7l\x1b[0m\x1b[2J\x1b[H";
 /// Undo everything the server may have switched on.
-const LEAVE: &[u8] = b"\x1b[0m\x1b[0 q\x1b[?1l\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l";
+const LEAVE: &[u8] = b"\x1b[0m\x1b[0 q\x1b[?1l\x1b[?2004l\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[?1049l";
 
 fn spawn_server() -> Result<()> {
     let exe = std::env::current_exe().context("locating dtm executable")?;
@@ -112,6 +112,16 @@ pub async fn query(target: Option<u32>, format: String) -> Result<String> {
     let pane = target_pane(target)?;
     match request(ClientMsg::Query { pane, format }).await? {
         ServerMsg::Text(t) => Ok(t),
+        ServerMsg::Error(e) => bail!(e),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+/// `dtm run` and its shorthands: run a command line in a session.
+pub async fn run_command(session: Option<String>, line: String) -> Result<()> {
+    let pane = std::env::var("DTM_PANE").ok().and_then(|v| v.parse().ok());
+    match request(ClientMsg::Command { session, pane, line }).await? {
+        ServerMsg::Ok => Ok(()),
         ServerMsg::Error(e) => bail!(e),
         other => bail!("unexpected reply: {other:?}"),
     }

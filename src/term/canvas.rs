@@ -218,7 +218,8 @@ impl Canvas {
             out.extend_from_slice(format!("\x1b[{} q", self.cursor_style).as_bytes());
         }
         if self.mouse != prev.mouse {
-            out.extend_from_slice(if self.mouse { b"\x1b[?1000h\x1b[?1006h" } else { b"\x1b[?1000l\x1b[?1006l" });
+            // 1002: presses and releases, and motion while a button is held (for dragging).
+            out.extend_from_slice(if self.mouse { b"\x1b[?1002h\x1b[?1006h" } else { b"\x1b[?1002l\x1b[?1000l\x1b[?1006l" });
         }
         if let Some((x, y)) = self.cursor {
             push_cup(&mut out, y, x);

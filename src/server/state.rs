@@ -281,6 +281,10 @@ pub enum PromptKind {
     NewGroup(SessionId),
     RenameGroup(SessionId, GroupId),
     GroupTag(SessionId, GroupId),
+    /// A copy-mode search in a pane (`true`: forward).
+    CopySearch(PaneId, bool),
+    /// A command line for the shown session (`<prefix> :`).
+    Command,
     ConfirmKillWindow(WindowId),
     ConfirmKillSession(SessionId),
     ConfirmRespawnPane(PaneId),
@@ -310,6 +314,26 @@ pub struct Prompt {
     pub kind: PromptKind,
     pub text: String,
     pub label: String,
+    /// The history entry shown, when stepping through it with Up/Down.
+    pub history: Option<usize>,
+    /// Tab completion in progress.
+    pub tab: Option<TabState>,
+}
+
+/// Cycling through the names a Tab press completes.
+pub struct TabState {
+    pub candidates: Vec<String>,
+    /// The candidate shown (`None` until the second press).
+    pub shown: Option<usize>,
+}
+
+/// The key list overlay.
+pub struct HelpState {
+    pub scroll: usize,
+    /// Only lines containing this are listed (any case).
+    pub query: String,
+    /// Keys are being typed into the query.
+    pub typing: bool,
 }
 
 /// Incremental window search in the sidebar.
@@ -324,6 +348,29 @@ pub struct Cycle {
     /// The order when the cycle began; `list[0]` is the window it started from.
     pub list: Vec<WindowId>,
     pub idx: usize,
+}
+
+/// A mouse drag in progress, begun by a press with the left button.
+#[derive(Clone, Debug)]
+pub enum Drag {
+    /// Selecting text in a window pane: where the press was (absolute line, column) and the
+    /// pane's text area on the terminal (x, y, width, height).
+    Select { pane: PaneId, origin: (usize, usize), area: (usize, usize, usize, usize) },
+    /// Moving the border of a split.
+    Border { path: Vec<bool>, axis: super::layout::Axis, rect: Rect },
+    SidebarEdge,
+    DockEdge,
+    /// Moving a window (or session, in the sessions list) in the sidebar; `at` is where it is.
+    Reorder { at: usize },
+}
+
+/// The last left click, to tell double and triple clicks.
+#[derive(Clone, Copy, Debug)]
+pub struct Click {
+    pub at: Instant,
+    pub x: u16,
+    pub y: u16,
+    pub count: u8,
 }
 
 pub struct Client {
@@ -355,9 +402,18 @@ pub struct Client {
     pub prev: Option<Canvas>,
     pub last_active: Instant,
     pub message: Option<(String, Instant)>,
+    /// The key list overlay, while it is open.
+    pub help: Option<HelpState>,
+    pub drag: Option<Drag>,
+    pub last_click: Option<Click>,
 }
 
 impl Client {
+    /// A prompt or the help list is on screen and has the keyboard.
+    pub fn overlay(&self) -> bool {
+        self.prompt.is_some() || self.help.is_some()
+    }
+
     pub fn new(id: ClientId, tx: UnboundedSender<ServerMsg>) -> Client {
         Client {
             id,
@@ -381,6 +437,9 @@ impl Client {
             prev: None,
             last_active: Instant::now(),
             message: None,
+            help: None,
+            drag: None,
+            last_click: None,
         }
     }
 

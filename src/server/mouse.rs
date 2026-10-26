@@ -1,14 +1,19 @@
 //! Mouse handling: sidebar clicks, pane focus, wheel scrolling, and
 //! forwarding to applications that asked for mouse reports.
 
-use super::copy::CopyMode;
-use super::layout::PaneId;
+use std::time::{Duration, Instant};
+
+use super::copy::{word_at, CopyMode};
+use super::layout::{PaneId, Rect};
 use super::sidebar::{self, Line};
-use super::state::ClientId;
+use super::state::{Click, ClientId, Drag};
 use super::Server;
 use crate::config::{Position, SidebarMode};
 use crate::keys::{MouseEvent, MouseKind, ALT, CTRL, SHIFT};
 use crate::term::screen::MouseTracking;
+
+/// Clicks this close together (in time) on the same cell are a double or triple click.
+const MULTI_CLICK: Duration = Duration::from_millis(400);
 
 /// Lines scrolled per wheel notch.
 const WHEEL_LINES: isize = 3;
@@ -54,6 +59,20 @@ impl Server {
             self.mark_dirty();
             return;
         }
+        // A drag in progress gets its motion and release wherever the pointer is.
+        if c.drag.is_some() {
+            match m.kind {
+                MouseKind::Drag | MouseKind::Release => return self.drag_mouse(cid, si, m),
+                MouseKind::Press => {
+                    if let Some(c) = self.clients.get_mut(&cid) {
+                        c.drag = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(c) = self.clients.get(&cid) else { return };
+        let left_press = m.kind == MouseKind::Press && m.button == 0;
         let sw = self.sidebar_width(c) as usize;
         let dw = self.dock_width(c, &self.sessions[si]) as usize;
         let cols = c.cols as usize;
@@ -63,13 +82,23 @@ impl Server {
         };
         let cw = cols - sw - dw;
         let (x, y) = (m.x as usize, m.y as usize);
+        let left_side = self.cfg.sidebar.position == Position::Left;
         if sw > 0 && x >= sidebar_x && x < sidebar_x + sw {
+            // The edge facing the panes drags the sidebar's width.
+            let edge = if left_side { sidebar_x + sw - 1 } else { sidebar_x };
+            if left_press && x == edge {
+                return self.start_drag(cid, Drag::SidebarEdge);
+            }
             return self.sidebar_click(cid, si, m);
         }
         if self.sessions[si].shown_popup().is_some() {
             return self.popup_mouse(si, content_x, m);
         }
         if dw > 0 && x >= dock_x && x < dock_x + dw {
+            let edge = if left_side { dock_x } else { dock_x + dw - 1 };
+            if left_press && x == edge {
+                return self.start_drag(cid, Drag::DockEdge);
+            }
             return self.dock_mouse(si, dock_x, dw, m);
         }
         if x < content_x || x >= content_x + cw {
@@ -79,6 +108,12 @@ impl Server {
         let s = &self.sessions[si];
         if cx >= s.size.0 as usize || cy >= s.size.1 as usize {
             return;
+        }
+        if left_press && !s.active_window().zoomed {
+            let whole = Rect::new(0, 0, s.size.0, s.size.1);
+            if let Some(b) = s.active_window().root.hit_border(whole, self.spacing(), cx as u16, cy as u16) {
+                return self.start_drag(cid, Drag::Border { path: b.path, axis: b.axis, rect: b.rect });
+            }
         }
         let hit = s.active_window().rects(s.size, self.spacing()).into_iter().find(|(_, r)| {
             r.w > 0
@@ -100,8 +135,195 @@ impl Server {
         let (ix, iy) = (inner.x as usize, inner.y as usize);
         if cx >= ix && cy >= iy && cx < ix + inner.w as usize && cy < iy + inner.h as usize {
             self.pane_mouse(pane_id, &m, cx - ix, cy - iy);
+            if left_press {
+                let area = (content_x + ix, iy, inner.w as usize, inner.h as usize);
+                self.begin_select(cid, pane_id, area, (cx - ix, cy - iy), &m);
+            }
         }
         self.mark_dirty();
+    }
+
+    fn start_drag(&mut self, cid: ClientId, drag: Drag) {
+        if let Some(c) = self.clients.get_mut(&cid) {
+            c.drag = Some(drag);
+        }
+        self.mark_dirty();
+    }
+
+    /// A left press in a window pane: it may turn into a text selection (when the program in
+    /// the pane does not take the mouse itself), and a double or triple click selects a word or line.
+    fn begin_select(&mut self, cid: ClientId, pane_id: PaneId, area: (usize, usize, usize, usize), (rx, ry): (usize, usize), m: &MouseEvent) {
+        let Some(p) = self.panes.get(&pane_id) else { return };
+        if p.screen.modes().mouse != MouseTracking::Off && p.copy.is_none() {
+            return;
+        }
+        let top = p.copy.as_ref().map_or(p.screen.history_len(), |c| c.top(&p.screen));
+        let origin = (top + ry, rx);
+        let now = Instant::now();
+        let Some(c) = self.clients.get_mut(&cid) else { return };
+        let count = match c.last_click {
+            Some(k) if now.duration_since(k.at) < MULTI_CLICK && (k.x, k.y) == (m.x, m.y) => k.count % 3 + 1,
+            _ => 1,
+        };
+        c.last_click = Some(Click { at: now, x: m.x, y: m.y, count });
+        c.drag = Some(Drag::Select { pane: pane_id, origin, area });
+        if count >= 2 {
+            self.select_unit(pane_id, origin, count);
+        }
+    }
+
+    /// Select the word (`count` 2) or the line (3) at `origin`, in copy mode.
+    fn select_unit(&mut self, pane_id: PaneId, origin: (usize, usize), count: u8) {
+        let Some(p) = self.panes.get_mut(&pane_id) else { return };
+        let screen = &p.screen;
+        let copy = p.copy.get_or_insert_with(|| CopyMode::new(screen));
+        copy.rect = false;
+        if count == 2 {
+            let (first, last) = word_at(screen, origin.0, origin.1);
+            copy.anchor = Some((origin.0, first));
+            copy.line_mode = false;
+            copy.reveal(screen, origin.0, last, false);
+        } else {
+            copy.anchor = Some((origin.0, 0));
+            copy.line_mode = true;
+            copy.reveal(screen, origin.0, origin.1, false);
+        }
+    }
+
+    /// The pointer moved with the button held.
+    fn drag_mouse(&mut self, cid: ClientId, si: usize, m: MouseEvent) {
+        let Some(drag) = self.clients.get(&cid).and_then(|c| c.drag.clone()) else { return };
+        let release = m.kind == MouseKind::Release;
+        if release && let Some(c) = self.clients.get_mut(&cid) {
+            c.drag = None;
+        }
+        match drag {
+            Drag::Select { pane, origin, area } => {
+                if !release {
+                    self.drag_select(pane, origin, area, &m);
+                } else if self.panes.get(&pane).and_then(|p| p.copy.as_ref()).is_some_and(|c| c.anchor.is_some()) {
+                    self.message(cid, "y copies the selection");
+                }
+            }
+            Drag::Border { path, axis, rect } if !release => {
+                let Some(c) = self.clients.get(&cid) else { return };
+                let content_x = self.content_x(c, &self.sessions[si]);
+                let (cx, cy) = ((m.x as usize).saturating_sub(content_x) as u16, m.y);
+                let first_len = match axis {
+                    super::layout::Axis::Cols => cx.saturating_sub(rect.x),
+                    super::layout::Axis::Rows => cy.saturating_sub(rect.y),
+                };
+                let (sp, size, sid) = (self.spacing(), self.sessions[si].size, self.sessions[si].id);
+                let whole = Rect::new(0, 0, size.0, size.1);
+                if self.sessions[si].active_window_mut().root.set_first_len(&path, first_len, whole, sp) {
+                    self.relayout(sid);
+                }
+            }
+            Drag::SidebarEdge if !release => {
+                let Some(c) = self.clients.get(&cid) else { return };
+                let w = if self.cfg.sidebar.position == Position::Left { m.x + 1 } else { c.cols.saturating_sub(m.x) };
+                self.set_sidebar_width(cid, si, w);
+            }
+            Drag::DockEdge if !release => {
+                let Some(c) = self.clients.get(&cid) else { return };
+                let w = if self.cfg.sidebar.position == Position::Left { c.cols.saturating_sub(m.x) } else { m.x + 1 };
+                self.set_dock_width(cid, si, w);
+            }
+            Drag::Reorder { at } if !release => self.drag_reorder(cid, si, at, m.y as usize),
+            _ => {}
+        }
+        self.mark_dirty();
+    }
+
+    /// Extend the selection of a drag that began at `origin` to the pointer, scrolling the pane
+    /// while the pointer is above or below its text.
+    fn drag_select(&mut self, pane_id: PaneId, origin: (usize, usize), area: (usize, usize, usize, usize), m: &MouseEvent) {
+        let Some(p) = self.panes.get_mut(&pane_id) else { return };
+        let screen = &p.screen;
+        let copy = p.copy.get_or_insert_with(|| CopyMode::new(screen));
+        let (ax, ay, aw, ah) = area;
+        let (x, y) = (m.x as usize, m.y as usize);
+        if y < ay {
+            copy.scroll(1, screen);
+        } else if y >= ay + ah {
+            copy.scroll(-1, screen);
+        }
+        copy.anchor = Some(origin);
+        copy.line_mode = false;
+        copy.rect = false;
+        copy.cx = x.saturating_sub(ax).min(aw.saturating_sub(1));
+        copy.cy = y.saturating_sub(ay).min(ah.saturating_sub(1));
+        copy.clamp(screen);
+    }
+
+    /// The terminal column where the session's panes start.
+    fn content_x(&self, c: &super::state::Client, s: &super::state::Session) -> usize {
+        match self.cfg.sidebar.position {
+            Position::Left => self.sidebar_width(c) as usize,
+            Position::Right => self.dock_width(c, s) as usize,
+        }
+    }
+
+    /// Move the dragged window (or session) one place towards the row the pointer is on.
+    fn drag_reorder(&mut self, cid: ClientId, si: usize, at: usize, y: usize) {
+        let Some(c) = self.clients.get(&cid) else { return };
+        if c.search.is_some() {
+            return;
+        }
+        let mode = c.sidebar_mode;
+        let Some((_, target)) = self.sidebar_target(cid, si, y) else { return };
+        if target == at {
+            return;
+        }
+        let sid = self.sessions[si].id;
+        // One place at a time until the entry is where the pointer is. A window that joins
+        // another group keeps its index for a step, so allow for that.
+        let mut at = at;
+        for _ in 0..2 * self.sessions[si].windows.len().max(self.sessions.len()) + 2 {
+            if at == target {
+                break;
+            }
+            let down = target > at;
+            let moved = match mode {
+                SidebarMode::Windows => self.move_window(sid, at, down),
+                SidebarMode::Sessions => {
+                    let to = if down { at + 1 } else { at.wrapping_sub(1) };
+                    (to < self.sessions.len()).then(|| self.sessions.swap(at, to)).map(|_| to)
+                }
+            };
+            match moved {
+                Some(now) => at = now,
+                None => break,
+            }
+        }
+        if let Some(c) = self.clients.get_mut(&cid) {
+            c.drag = Some(Drag::Reorder { at });
+            if c.sidebar_focus.is_some() {
+                c.sidebar_focus = Some(at);
+            }
+        }
+    }
+
+    /// The sidebar row, and the window or session index it lists, drawn on screen row `y`.
+    fn sidebar_target(&self, cid: ClientId, si: usize, y: usize) -> Option<(usize, usize)> {
+        let c = self.clients.get(&cid)?;
+        let s = &self.sessions[si];
+        let rows = self.sidebar_rows(c, s);
+        let lines = self.sidebar_lines(c, s);
+        let active_row = match c.sidebar_mode {
+            SidebarMode::Windows => rows.iter().position(|&i| i == s.active).unwrap_or(0),
+            SidebarMode::Sessions => si,
+        };
+        let active = lines.iter().position(|&l| l == Line::Row(active_row)).unwrap_or(0);
+        let has_footer = self.footer_visible(c);
+        let at = sidebar::item_at(lines.len(), active, c.rows as usize, has_footer, self.cfg.islands, y)?;
+        let row = match lines[at] {
+            Line::Row(row) => row,
+            Line::Gap => return None,
+            // A group's heading stands for its first listed window.
+            Line::Group(gi) => rows.iter().position(|&i| s.group_of(i) == gi)?,
+        };
+        Some((row, *rows.get(row)?))
     }
 
     /// Events over the popup go to it; everything else is ignored while it is up.
@@ -212,25 +434,8 @@ impl Server {
         if m.kind != MouseKind::Press || m.button != 0 {
             return;
         }
-        let Some(c) = self.clients.get(&cid) else { return };
-        let s = &self.sessions[si];
-        let rows = self.sidebar_rows(c, s);
-        let lines = self.sidebar_lines(c, s);
-        let active_row = match c.sidebar_mode {
-            SidebarMode::Windows => rows.iter().position(|&i| i == s.active).unwrap_or(0),
-            SidebarMode::Sessions => si,
-        };
-        let active = lines.iter().position(|&l| l == Line::Row(active_row)).unwrap_or(0);
-        let has_footer = self.footer_visible(c);
-        let Some(at) = sidebar::item_at(lines.len(), active, c.rows as usize, has_footer, self.cfg.islands, m.y as usize) else { return };
-        let mode = c.sidebar_mode;
-        let row = match lines[at] {
-            Line::Row(row) => row,
-            Line::Gap => return,
-            // A group's heading opens its first listed window.
-            Line::Group(gi) => rows.iter().position(|&i| s.group_of(i) == gi).unwrap_or(0),
-        };
-        let idx = rows[row];
+        let Some((row, idx)) = self.sidebar_target(cid, si, m.y as usize) else { return };
+        let Some(mode) = self.clients.get(&cid).map(|c| c.sidebar_mode) else { return };
         if let Some(c) = self.clients.get_mut(&cid)
             && c.sidebar_focus.is_some() {
                 c.sidebar_focus = Some(row);
@@ -245,6 +450,12 @@ impl Server {
                 self.switch_client(cid, id);
                 self.focus_shown(id);
             }
+        }
+        // Dragging on from the press moves the entry (not while searching).
+        if let Some(c) = self.clients.get_mut(&cid)
+            && c.search.is_none()
+        {
+            c.drag = Some(Drag::Reorder { at: idx });
         }
         self.mark_dirty();
     }

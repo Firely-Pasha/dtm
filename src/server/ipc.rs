@@ -105,6 +105,24 @@ impl Server {
         Ok(())
     }
 
+    /// `dtm run` and friends: run a command line in a session.
+    pub fn command_ipc(&mut self, session: Option<&str>, pane: Option<PaneId>, line: &str) -> Result<(), String> {
+        let cmd = crate::command::Command::parse(line)?;
+        let sid = match (session, pane) {
+            (Some(n), _) => self.sessions.iter().find(|s| s.name == n).map(|s| s.id).ok_or(format!("no such session: {n}"))?,
+            (None, Some(p)) if self.locate_pane(p).is_some() || self.extra_of(p).is_some() => {
+                let si = self.locate_pane(p).map(|l| l.0).or_else(|| self.extra_of(p).map(|e| e.0)).unwrap_or(0);
+                self.sessions[si].id
+            }
+            _ if self.sessions.len() == 1 => self.sessions[0].id,
+            _ if self.sessions.is_empty() => return Err("no sessions".into()),
+            _ => return Err("several sessions are running: pick one with --session".into()),
+        };
+        // The client that is looking at the session (the most recently used one), if any.
+        let viewer = self.clients.values().filter(|c| c.session == Some(sid)).max_by_key(|c| c.last_active).map(|c| c.id);
+        self.run_command(viewer, sid, cmd)
+    }
+
     /// `dtm query`: expand a format for `pane`.
     pub fn query_ipc(&self, pane: PaneId, format: &str) -> Result<String, String> {
         if self.extra_of(pane).is_some() {
