@@ -98,7 +98,7 @@ an iTerm2 key mapping "Send Escape Sequence" `[9;5u`. xterm's
 
 **Size indicator**: while you resize (and for the repeat window after it), the middle of the pane shows its size as `columns×rows`, and the sidebar or dock shows its width, so panes in different windows can be lined up.
 
-**Resizing**: while the sidebar or the dock has focus, `<prefix> h` / `l` move its inner edge to resize it, and then plain `h` / `l` keep resizing by one cell for a second, as for panes. Both widths belong to the session (every client and later attach sees them); the dock's is also exported. Otherwise `<prefix> h j k l` resizes the focused pane by 1 cell (`H J K L` by 5), then plain `h j k l` keep
+**Resizing**: while the sidebar or the dock has focus, `<prefix> h` / `l` move its inner edge to resize it, and then plain `h` / `l` keep resizing by one cell for a second, as for panes. Both widths belong to the session (every client and later attach sees them); the dock's is exported, the sidebar's is not (its default is `[sidebar] width`). Otherwise `<prefix> h j k l` resizes the focused pane by 1 cell (`H J K L` by 5), then plain `h j k l` keep
 resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
 don't have to press the prefix again for every step. Any other key ends it.
 
@@ -257,8 +257,8 @@ windows:
   left at a prompt when it ends. Unknown keys and mistakes (a split with one
   pane, a bad size) are reported with their position before anything starts.
 - **`sidebar`** (top level) sets this project's sidebar: `width` (4-200) and
-  `visible`. Exporting writes the width you resized the sidebar to; a
-  `visible` you wrote is kept.
+  `visible`. Exporting keeps what you wrote; a width you resized to is not
+  saved (set the default in `[sidebar] width` of config.toml).
 - **`pane_command`** (top level) is typed into every pane's shell before the
   pane's own command, e.g. `pane_command: source .venv/bin/activate`. It also
   applies to panes you create later in the session (splits, new windows, the
@@ -450,6 +450,46 @@ towards it (`<prefix> Left` from the leftmost pane, or a root binding such as
 (`sidebar.follow`, on by default), `Enter` (or `o`) opens it and leaves, `q` leaves, `x` kills (after a y/n confirmation), `r`
 renames, `g`/`t` rename / re-tag the window's group, `J`/`K` reorder, `n` creates a window or session, `Tab` toggles the
 list, `q` leaves. All of it is configurable in `[keys.sidebar]`.
+
+`[sidebar]` options: `position`, `width`, `visible`, `default_mode`, `follow`, and
+`hints` (the key-hint footer while focused), `group_gap` (the empty line between
+groups), `marks` (activity, bell, zoom and not-loaded markers).
+
+### Status box
+
+At the bottom of the sidebar, below a line, are lines of your
+choosing, `[status] lines`: each is a template of text and `#{...}` variables, e.g.
+the default
+
+```toml
+[status]
+lines = [
+  "#{user}@#{host}#{fill}#{time:%H:%M}",
+  "#{?git,⎇ #{git_branch}#{git_dirty},}",
+  "#{date:%a %d %b}",
+  "load #{load}#{fill}mem #{mem_percent}",
+]
+```
+
+- `#{name}` is a value, `#{name:arg}` a value with an argument (`#{time:%H:%M:%S}` takes any
+  `strftime` format).
+- `#{?name,then,else}` shows `then` when the value is neither empty nor `0`, else `else`
+  (optional). Branches can hold variables, other conditions and fills; write `#,` and `#}` for
+  a comma or brace in a branch. `##` is a literal `#`.
+- `#{fill}` pads with spaces to the box's width, so the text after it sits at the right edge;
+  several fills share the room (`#{fill}#{time}#{fill}` centres the clock), and `#{fill:·}`
+  fills with that character.
+- A line whose variables all come out empty is left out (no battery, no repository); an empty
+  string is a blank line.
+- Variables: `user`, `host`, `time`, `date`, `session`, `window`, `group`, `pane_cwd`,
+  `pane_command`, `sessions`, `windows`, `clients`, `load`, `mem`, `mem_percent`, `battery`,
+  `uptime` (the last three on Linux), and `git`, `git_branch`, `git_dirty`. The git ones describe
+  the repository around the session's directory (where dtm was started, or the project root), found
+  in it or a parent; they do not follow a `cd` in a pane. They come from a background `git status`
+  every few seconds, so rendering never waits for git.
+
+`visible = false` hides the box. It also hides itself when fewer than six rows would be left
+for the list, and while the sidebar is maximized.
 
 Prompts (rename, confirmations, the dock command) are a box in the middle of the screen: type and press Enter, or Esc to cancel; confirmations take `y` and cancel on any other key.
 

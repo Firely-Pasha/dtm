@@ -399,7 +399,7 @@ impl Server {
                 .collect(),
         });
         Snapshot {
-            plan: Plan { name: s.name.clone(), root, groups, windows, focus: s.active, pane_command: s.pane_command.clone(), dock, sidebar_width: s.sidebar_w, sidebar_visible: None },
+            plan: Plan { name: s.name.clone(), root, groups, windows, focus: s.active, pane_command: s.pane_command.clone(), dock, sidebar_width: None, sidebar_visible: None },
             source: s.project.clone(),
         }
     }

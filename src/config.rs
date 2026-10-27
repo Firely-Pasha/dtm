@@ -32,6 +32,19 @@ pub struct SidebarCfg {
     pub default_mode: SidebarMode,
     /// Moving the selection while the sidebar has focus switches to that item right away.
     pub follow: bool,
+    /// Key hints in the footer while the sidebar has the keyboard.
+    pub hints: bool,
+    /// An empty line between window groups.
+    pub group_gap: bool,
+    /// Activity, bell, zoom and not-loaded markers at the right edge of a row.
+    pub marks: bool,
+}
+
+/// The status box under the sidebar: lines of text with `#{...}` variables.
+#[derive(Clone, Debug)]
+pub struct StatusCfg {
+    pub visible: bool,
+    pub lines: Vec<String>,
 }
 
 /// The popup shell's size, as a share of the pane area or in cells.
@@ -59,6 +72,7 @@ pub struct Config {
     /// Draw the sidebar, every pane and the dock as separate rounded boxes.
     pub islands: bool,
     pub sidebar: SidebarCfg,
+    pub status: StatusCfg,
     pub popup: PopupCfg,
     pub theme: Theme,
     pub prefix_keys: HashMap<KeyCombo, Action>,
@@ -73,6 +87,7 @@ pub struct Config {
 struct RawConfig {
     options: RawOptions,
     sidebar: RawSidebar,
+    status: RawStatus,
     popup: RawPopup,
     theme: RawTheme,
     keys: RawKeys,
@@ -168,6 +183,16 @@ struct RawSidebar {
     visible: Option<bool>,
     default_mode: Option<SidebarMode>,
     follow: Option<bool>,
+    hints: Option<bool>,
+    group_gap: Option<bool>,
+    marks: Option<bool>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct RawStatus {
+    visible: Option<bool>,
+    lines: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -353,6 +378,14 @@ fn default_table(defaults: &[(&str, &str)]) -> HashMap<KeyCombo, Action> {
         .collect()
 }
 
+/// The status box's lines unless `[status] lines` says otherwise.
+pub const DEFAULT_STATUS_LINES: &[&str] = &[
+    "#{user}@#{host}#{fill}#{time:%H:%M}",
+    "#{?git,⎇ #{git_branch}#{git_dirty},}",
+    "#{date:%a %d %b}",
+    "load #{load}#{fill}mem #{mem_percent}",
+];
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -371,7 +404,11 @@ impl Default for Config {
                 visible: true,
                 default_mode: SidebarMode::Windows,
                 follow: true,
+                hints: true,
+                group_gap: true,
+                marks: true,
             },
+            status: StatusCfg { visible: true, lines: DEFAULT_STATUS_LINES.iter().map(|l| l.to_string()).collect() },
             prefix_keys: default_table(DEFAULT_PREFIX_KEYS),
             root_keys: default_table(DEFAULT_ROOT_KEYS),
             copy_keys: default_table(DEFAULT_COPY_KEYS),
@@ -450,6 +487,21 @@ impl Config {
         }
         if let Some(v) = raw.sidebar.follow {
             sb.follow = v;
+        }
+        if let Some(v) = raw.sidebar.hints {
+            sb.hints = v;
+        }
+        if let Some(v) = raw.sidebar.group_gap {
+            sb.group_gap = v;
+        }
+        if let Some(v) = raw.sidebar.marks {
+            sb.marks = v;
+        }
+        if let Some(v) = raw.status.visible {
+            cfg.status.visible = v;
+        }
+        if let Some(v) = raw.status.lines {
+            cfg.status.lines = v;
         }
         if let Some(v) = &raw.popup.width {
             cfg.popup.width = parse_size(v).map_err(|e| format!("popup.width: {e}"))?;
@@ -673,6 +725,8 @@ mod tests {
             assert_eq!(c.copy_keys.get(k), Some(a), "{}", format_key(*k));
         }
         assert_eq!(c.theme, d.theme, "the documented [theme] is the default preset");
+        assert_eq!(c.status.lines, d.status.lines, "the documented [status] is the default");
+        assert_eq!((c.sidebar.hints, c.sidebar.group_gap, c.sidebar.marks), (true, true, true));
     }
 
     #[test]
@@ -697,5 +751,22 @@ mod tests {
     #[test]
     fn missing_file_is_defaults() {
         assert!(Config::load(Path::new("/nonexistent/dtm/config.toml")).is_ok());
+    }
+
+    #[test]
+    fn sidebar_options_and_status_section() {
+        let d = Config::default();
+        assert!(d.sidebar.hints && d.sidebar.group_gap && d.sidebar.marks);
+        assert!(d.status.visible);
+        assert_eq!(d.status.lines.len(), DEFAULT_STATUS_LINES.len());
+        let c = Config::from_toml(
+            "[sidebar]\nhints = false\ngroup_gap = false\nmarks = false\n[status]\nvisible = false\nlines = [\"a\", \"\", \"#{time}\"]\n",
+        )
+        .unwrap();
+        assert!(!c.sidebar.hints && !c.sidebar.group_gap && !c.sidebar.marks);
+        assert!(!c.status.visible);
+        assert_eq!(c.status.lines, vec!["a", "", "#{time}"]);
+        assert!(Config::from_toml("[status]\nbogus = 1").is_err());
+        assert!(Config::from_toml("[status]\nlines = \"x\"").is_err());
     }
 }

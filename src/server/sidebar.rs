@@ -51,6 +51,8 @@ pub struct SidebarView {
     pub subtag: Option<char>,
     pub items: Vec<Item>,
     pub footer: Option<Footer>,
+    /// The status box's expanded lines (fills unresolved), empty for none.
+    pub status: Vec<String>,
     pub focused: bool,
     /// Drawn as a rounded box (with the gap column facing the panes) instead of a column.
     pub islands: bool,
@@ -96,10 +98,73 @@ pub fn item_at(items: usize, active_idx: usize, rows: usize, has_footer: bool, i
 
 /// Draw the sidebar into columns `x0..x0+width` of the full height of `canvas`.
 pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, view: &SidebarView) {
+    draw_list(canvas, x0, width, position, view);
+    let h = status_rows(view.status.len(), canvas.rows);
+    if h > 0 && width >= if view.islands { 5 } else { 2 } {
+        draw_status(canvas, x0, width, position, canvas.rows - h, view);
+    }
+}
+
+/// How many rows the status lines take at the bottom of a sidebar `rows` tall: the lines plus the
+/// row they hang from (the box's bottom border in islands style, the rule in plain), but only when
+/// at least 6 rows stay for the list. A line above them (the list's last row in islands, the rule
+/// itself in plain) separates them from the list.
+pub fn status_rows(lines: usize, rows: usize) -> usize {
+    if lines == 0 {
+        return 0;
+    }
+    let h = lines + 1;
+    if rows >= h + MIN_LIST_ROWS { h } else { 0 }
+}
+
+const MIN_LIST_ROWS: usize = 6;
+
+/// The status lines in the bottom `rows - y` rows of the sidebar, below a separating line.
+fn draw_status(canvas: &mut Canvas, x0: usize, width: usize, position: Position, y: usize, view: &SidebarView) {
+    use crate::server::status::resolve_fills;
+    let theme = &view.theme;
+    let (sep_x, text_x) = match position {
+        Position::Left => (x0 + width - 1, x0),
+        Position::Right => (x0, x0 + 1),
+    };
+    // The line between the list and the status is in the border colour, never the focused one,
+    // and stops a cell short of the edges, like the text.
+    let rule = theme.border(false);
+    let border = theme.border(view.focused);
+    let (text_x, text_w, first) = if view.islands {
+        let box_x = if position == Position::Left { x0 } else { x0 + 1 };
+        for x in box_x + 2..box_x + width - 3 {
+            canvas.set(x, y - 1, Cell { ch: '─', width: 1, attrs: rule });
+        }
+        (box_x + 1, width - 3, y)
+    } else {
+        for x in text_x + 1..text_x + width - 2 {
+            canvas.set(x, y, Cell { ch: '─', width: 1, attrs: rule });
+        }
+        for row in y..canvas.rows {
+            canvas.set(sep_x, row, Cell { ch: '│', width: 1, attrs: border });
+        }
+        (text_x, width - 1, y + 1)
+    };
+    // One blank cell on each side, like the list's rows.
+    let room = text_w.saturating_sub(2);
+    for (k, line) in view.status.iter().enumerate() {
+        let row = first + k;
+        if row >= canvas.rows - usize::from(view.islands) {
+            break;
+        }
+        let attrs = if k == 0 { theme.title() } else { theme.muted() };
+        let text = truncate(&resolve_fills(line, room), room);
+        canvas.put_str(text_x + 1, row, &text, attrs, room);
+    }
+}
+
+fn draw_list(canvas: &mut Canvas, x0: usize, width: usize, position: Position, view: &SidebarView) {
     if width < 2 {
         return;
     }
-    let rows = canvas.rows;
+    let status_h = status_rows(view.status.len(), canvas.rows);
+    let rows = canvas.rows - status_h;
     let theme = &view.theme;
     let (bold, dim) = (theme.title(), theme.muted());
     let (sep_x, text_x) = match position {
@@ -116,7 +181,7 @@ pub fn draw(canvas: &mut Canvas, x0: usize, width: usize, position: Position, vi
             return;
         }
         let box_x = if position == Position::Left { x0 } else { x0 + 1 };
-        super::render::draw_box(canvas, (box_x, 0, width - 1, rows), theme.border(view.focused));
+        super::render::draw_box(canvas, (box_x, 0, width - 1, canvas.rows), theme.border(view.focused));
         text_x = box_x + 1;
         text_w = width - 3;
         // The session's name sits in the top border.
@@ -198,7 +263,7 @@ mod tests {
     }
 
     fn view(items: Vec<Item>) -> SidebarView {
-        SidebarView { header: "main".into(), subheader: "windows".into(), subtag: None, items, footer: None, focused: false, islands: false, theme: Theme::DEFAULT }
+        SidebarView { header: "main".into(), subheader: "windows".into(), subtag: None, items, footer: None, status: Vec::new(), focused: false, islands: false, theme: Theme::DEFAULT }
     }
 
     #[test]
@@ -320,5 +385,57 @@ mod tests {
         v.footer = Some(Footer { text: "rename: x".into(), prompt: true });
         draw(&mut c, 0, 14, Position::Left, &v);
         assert!(c.row_text(4).contains("rename: x"));
+    }
+
+    fn status_view(lines: &[&str], islands: bool) -> SidebarView {
+        let mut v = view(vec![item("1 sh", "", true)]);
+        v.islands = islands;
+        v.status = lines.iter().map(|l| crate::server::status::expand(l, &|_, _| String::new())).collect();
+        v
+    }
+
+    #[test]
+    fn status_lines_sit_inside_the_sidebar_box_below_a_line() {
+        let mut c = Canvas::new(20, 12);
+        let mut v = status_view(&["me@box#{fill}12:00", "second"], true);
+        v.focused = true;
+        draw(&mut c, 0, 20, Position::Left, &v);
+        // inside the one box: a line across it, the 2 lines, then the bottom border
+        assert_eq!(c.row_text(8), format!("│ {} │", "─".repeat(15)), "inset, no tees");
+        assert_eq!(c.cell(5, 8).attrs, Theme::DEFAULT.border(false), "the unfocused border colour");
+        assert_eq!(c.row_text(9), "│ me@box    12:00 │");
+        assert!(c.row_text(10).starts_with("│ second"), "{:?}", c.row_text(10));
+        assert_eq!(c.cell(0, 11).ch, '╰');
+        assert_eq!(c.cell(0, 0).ch, '╭', "still one box from the top");
+        assert!(c.cell(2, 9).attrs.has(flags::BOLD), "the first line is the title");
+        assert!(!c.cell(2, 10).attrs.has(flags::BOLD));
+    }
+
+    #[test]
+    fn status_block_in_plain_style_is_a_rule_and_lines() {
+        let mut c = Canvas::new(20, 10);
+        let mut v = status_view(&["hello"], false);
+        v.focused = true;
+        draw(&mut c, 0, 20, Position::Left, &v);
+        assert_eq!(c.row_text(8), format!(" {}  │", "─".repeat(17)).replace("  │", " │"), "inset rule, the separator goes on");
+        assert_eq!(c.cell(5, 8).attrs, Theme::DEFAULT.border(false));
+        assert_eq!(c.row_text(9), " hello             │");
+        assert_eq!(c.cell(19, 7).ch, '│', "the separator runs on above the rule");
+    }
+
+    #[test]
+    fn status_box_needs_room_for_the_list() {
+        assert_eq!(status_rows(0, 40), 0);
+        assert_eq!(status_rows(3, 40), 4);
+        assert_eq!(status_rows(3, 10), 4);
+        assert_eq!(status_rows(3, 9), 0, "fewer than 6 rows would be left for the list");
+    }
+
+    #[test]
+    fn item_at_uses_the_rows_the_list_has() {
+        // 12 rows with a 4-row status part: the list gets 8, so row 9 is no item
+        let rows = 12 - status_rows(3, 12);
+        assert_eq!(item_at(20, 0, rows, false, true, 9), None);
+        assert_eq!(item_at(20, 0, rows, false, true, 2), Some(0));
     }
 }

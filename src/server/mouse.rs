@@ -316,7 +316,8 @@ impl Server {
         };
         let active = lines.iter().position(|&l| l == Line::Row(active_row)).unwrap_or(0);
         let has_footer = self.footer_visible(c);
-        let at = sidebar::item_at(lines.len(), active, c.rows as usize, has_footer, self.cfg.islands, y)?;
+        let rows_left = c.rows as usize - sidebar::status_rows(self.status_lines(c, s).len(), c.rows as usize);
+        let at = sidebar::item_at(lines.len(), active, rows_left, has_footer, self.cfg.islands, y)?;
         let row = match lines[at] {
             Line::Row(row) => row,
             Line::Gap => return None,

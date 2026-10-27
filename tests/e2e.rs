@@ -12,8 +12,10 @@ const CTRL_A: &str = "\x01";
 /// Most tests were written for the plain style (islands is the default), so a config
 /// that does not choose a style gets `style = "plain"`.
 fn with_plain_style(config: &str) -> String {
+    // The clock and machine numbers would make screens differ from run to run.
+    let config = if config.contains("[status]") { config.to_string() } else { format!("{config}\n[status]\nvisible = false\n") };
     if config.contains("style =") {
-        return config.to_string();
+        return config;
     }
     match config.find("[options]\n") {
         Some(at) => {
@@ -1469,7 +1471,7 @@ async fn sidebar_width_is_kept_by_the_session() {
 }
 
 #[tokio::test]
-async fn project_sidebar_width_is_applied_and_exported_and_o_opens() {
+async fn project_sidebar_width_is_applied_not_exported_and_o_opens() {
     let env = Env::new("proj-sidebar", "");
     let proj = env.dir.join("proj");
     let file = proj.join("project.dtm.yaml");
@@ -1488,7 +1490,8 @@ async fn project_sidebar_width_is_applied_and_exported_and_o_opens() {
     let (ok, msg) = env.run(&["export", "-t", "sbp"]);
     assert!(ok, "{msg}");
     let yaml = std::fs::read_to_string(&file).unwrap();
-    assert!(yaml.contains("sidebar:") && yaml.contains("width: 35"), "{yaml}");
+    // The width the project file says stays; what was resized to is not written.
+    assert!(yaml.contains("sidebar:") && yaml.contains("width: 30") && !yaml.contains("width: 35"), "{yaml}");
 }
 
 #[tokio::test]
@@ -2486,4 +2489,63 @@ async fn help_can_be_searched() {
     h.wait_text("no match").await;
     h.send("q");
     h.wait_for("closed", |t| !t.contains("no match") && !t.contains("filter:")).await;
+}
+
+#[tokio::test]
+async fn status_box_shows_expanded_lines_with_fill_and_conditions() {
+    let config = "[status]\nlines = [\"s=#{session}#{fill}w=#{windows}\", \"#{?git,in repo,no repo}\", \"#{nope}\", \"#{?windows,#{session}-#{clients},}\"]\n";
+    let env = Env::new("status-lines", config);
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.wait_text("no repo").await;
+    // plain style: a rule, then the lines; the empty one is left out; fill pushes w=1 to the edge
+    let rows = h.screen.text();
+    let at = rows.iter().position(|r| r.contains("no repo")).unwrap();
+    assert!(rows[at - 1].starts_with(" s=0") && rows[at - 1].contains("w=1"), "{rows:?}");
+    assert!(rows[at - 1].trim_end().trim_end_matches('│').trim_end().ends_with("w=1"), "{rows:?}");
+    assert!(rows[at - 2].trim_start().starts_with('─'), "{rows:?}");
+    assert!(rows[at + 1].contains("0-1"), "the empty line is dropped: {rows:?}");
+
+    // the list above still reacts to clicks
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.wait_text("w=2").await;
+    h.send("echo w2mark$((1+1))\r");
+    h.wait_text("w2mark2").await;
+    h.send("\x1b[<0;5;3M\x1b[<0;5;3m");
+    h.wait_for("window 1 shown by the click", |t| !t.contains("w2mark2")).await;
+}
+
+#[tokio::test]
+async fn status_box_knows_the_sessions_git_branch() {
+    let env = Env::new("status-git", "[status]\nlines = [\"#{?git,on #{git_branch}#{git_dirty},no repo}\"]\n");
+    let repo = env.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = Command::new("git").args(args).current_dir(&repo).output().unwrap().status.success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "trunk"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+    let mut h = env.client_in(Some(&repo), &[], 100, 30);
+    h.wait_text("on trunk").await;
+    assert!(!h.text().contains("on trunk*"), "clean tree");
+    std::fs::write(repo.join("f"), "x").unwrap();
+    git(&["add", "f"]);
+    h.wait_text("on trunk*").await;
+}
+
+#[tokio::test]
+async fn sidebar_options_turn_hints_and_group_gaps_off() {
+    let env = Env::new("sidebar-opts", "[sidebar]\nhints = false\nmarks = false\n");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&format!("{CTRL_A}w"));
+    h.send("j");
+    h.send(&format!("{CTRL_A}c"));
+    h.wait_text("2 sh").await;
+    h.send(&format!("{CTRL_A}w"));
+    // no hint line while the sidebar has the keyboard
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!h.text().contains(SIDEBAR_HINT), "{}", h.text());
 }

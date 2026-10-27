@@ -402,6 +402,8 @@ pub struct Client {
     pub cycle_until: Option<Instant>,
     /// The focused sidebar fills the whole terminal.
     pub sidebar_max: bool,
+    /// The status box text this client was last sent, to redraw only when it changes.
+    pub status_seen: String,
     /// Plain resize keys are accepted until this moment.
     pub resize_until: Option<Instant>,
     pub prev: Option<Canvas>,
@@ -438,6 +440,7 @@ impl Client {
             cycle: None,
             cycle_until: None,
             sidebar_max: false,
+            status_seen: String::new(),
             resize_until: None,
             prev: None,
             last_active: Instant::now(),

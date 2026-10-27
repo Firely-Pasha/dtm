@@ -11,7 +11,7 @@ lazy: true                # windows start when you open them (false: all at once
 # create later (splits, new windows, the popup, the dock) and respawned ones.
 pane_command: source .venv/bin/activate
 
-sidebar:                  # this project's sidebar (exporting writes the width you resized to)
+sidebar:                  # this project's sidebar (exporting leaves it as written here)
   width: 28               # 4-200
   visible: true
 

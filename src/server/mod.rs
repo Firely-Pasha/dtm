@@ -18,6 +18,7 @@ pub mod commands;
 pub mod search;
 pub mod sidebar;
 pub mod state;
+pub mod status;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -58,6 +59,8 @@ pub enum Event {
     KeyFlush { id: ClientId },
     /// Draw again (an indicator timed out).
     Redraw,
+    /// A background `git status` of a session's directory finished.
+    Git { dir: PathBuf, info: Option<status::GitInfo> },
 }
 
 pub struct Server {
@@ -77,6 +80,9 @@ pub struct Server {
     had_session: bool,
     /// Lines run from the `:` prompt, oldest first.
     pub command_history: Vec<String>,
+    /// Machine numbers for the status box, sampled each tick.
+    pub stats: status::Stats,
+    pub git: status::GitCache,
     next_pane: u32,
     next_window: u32,
     next_session: u32,
@@ -177,6 +183,8 @@ impl Server {
             paste_text: String::new(),
             had_session: false,
             command_history: Vec::new(),
+            stats: status::Stats::default(),
+            git: status::GitCache::default(),
             next_pane: 1,
             next_window: 1,
             next_session: 1,
@@ -224,6 +232,11 @@ impl Server {
             Event::Pane { id, ev: PtyEvent::Output(data) } => self.pane_output(id, data),
             Event::Pane { id, ev: PtyEvent::Exited } => self.close_pane(id),
             Event::Redraw => self.mark_dirty(),
+            Event::Git { dir, info } => {
+                if self.git.finish(dir, info) {
+                    self.mark_dirty();
+                }
+            }
             Event::KeyFlush { id } => {
                 if let Some(c) = self.clients.get_mut(&id) {
                     c.flush_scheduled = false;
@@ -600,6 +613,7 @@ impl Server {
                 dirty |= self.refresh_name(si, wi);
             }
         }
+        dirty |= self.refresh_status();
         for c in self.clients.values_mut() {
             if c.message.as_ref().is_some_and(|(_, t)| t.elapsed() >= MESSAGE_TTL) {
                 c.message = None;
@@ -629,7 +643,7 @@ impl Server {
 
     /// Does the sidebar draw a footer line for this client? (Not for prompts.)
     pub fn footer_visible(&self, c: &Client) -> bool {
-        c.message.is_some() || c.sidebar_focus.is_some()
+        c.message.is_some() || (c.sidebar_focus.is_some() && self.cfg.sidebar.hints)
     }
 
     /// Keep each client's sidebar selection inside its list.
@@ -745,7 +759,7 @@ impl Server {
         let mut last = None;
         for (row, &i) in rows.iter().enumerate() {
             if headings && last != Some(s.group_of(i)) {
-                if last.is_some() {
+                if last.is_some() && self.cfg.sidebar.group_gap {
                     lines.push(Line::Gap);
                 }
                 lines.push(Line::Group(s.group_of(i)));
@@ -778,17 +792,19 @@ impl Server {
                         let i = rows[row];
                         let w = &s.windows[i];
                         let mut marks = String::new();
-                        if w.zoomed {
-                            marks.push('Z');
-                        }
-                        if w.bell {
-                            marks.push('!');
-                        }
-                        if w.activity {
-                            marks.push('●');
-                        }
-                        if w.pending {
-                            marks.push('…');
+                        if self.cfg.sidebar.marks {
+                            if w.zoomed {
+                                marks.push('Z');
+                            }
+                            if w.bell {
+                                marks.push('!');
+                            }
+                            if w.activity {
+                                marks.push('●');
+                            }
+                            if w.pending {
+                                marks.push('…');
+                            }
                         }
                         let label = Self::window_label(s, i, false);
                         Item { label, marks, active: i == s.active, selected: sidebar_focused && c.sidebar_focus == Some(row), heading: false }
@@ -831,13 +847,15 @@ impl Server {
         };
         let footer = match &c.message {
             Some((m, _)) => Some(Footer { text: m.clone(), prompt: false }),
+            None if !self.cfg.sidebar.hints => None,
             None if c.search.is_some() => Some(Footer { text: "⏎ open  esc back".to_string(), prompt: false }),
             None if c.sidebar_focus.is_some() => {
                 Some(Footer { text: "j/k ⏎ x r g t n / e q".to_string(), prompt: false })
             }
             None => None,
         };
-        SidebarView { header, subheader, subtag, items, footer, focused: sidebar_focused, islands: self.cfg.islands, theme: self.cfg.theme }
+        let status = if self.sidebar_width(c) > 0 { self.status_lines(c, s) } else { Vec::new() };
+        SidebarView { header, subheader, subtag, items, footer, status, focused: sidebar_focused, islands: self.cfg.islands, theme: self.cfg.theme }
     }
 
     fn compose(&self, c: &Client, s: &Session, content: &Canvas) -> Canvas {
@@ -879,7 +897,7 @@ impl Server {
             canvas.bracketed_paste = m.bracketed_paste;
             canvas.cursor_style = p.cursor_style();
         }
-        let view = self.sidebar_view(c, s);
+        let mut view = self.sidebar_view(c, s);
         if sw > 0 {
             sidebar::draw(&mut canvas, sidebar_x, sw, self.cfg.sidebar.position, &view);
         } else if let Some(f) = &view.footer {
@@ -909,6 +927,7 @@ impl Server {
             }
         }
         if c.sidebar_max && c.sidebar_focus.is_some() {
+            view.status.clear();
             sidebar::draw(&mut canvas, 0, cols, Position::Left, &view);
         }
         self.draw_prompt_box(c, &mut canvas);

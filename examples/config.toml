@@ -29,6 +29,34 @@ visible = true
 default_mode = "windows"  # windows | sessions
 follow = true           # moving the selection in the focused sidebar shows that
                         # window/session immediately (false: only on Enter)
+hints = true            # key hints in the footer while the sidebar has the keyboard
+group_gap = true        # an empty line between window groups
+marks = true            # activity, bell, zoom and not-loaded markers on the right of a row
+                        # (resize the sidebar with the mouse or <prefix> h/l; the width is
+                        # not saved, set it here or in a project file)
+
+# The status box under the sidebar: one template per line.
+#   #{name}            a value        #{name:arg}  a value with an argument
+#   #{?name,then,else} then/else when the value is not empty or 0; `else` is optional,
+#                      write #, and #} for a comma or brace inside a branch
+#   #{fill}            spaces up to the box's width, so what follows sits at the right edge;
+#                      several fills share the room (#{fill}x#{fill} centres x);
+#                      #{fill:-} fills with that character
+#   ##                 a literal #
+# A line whose variables all come out empty is left out; an empty string is a blank line.
+# Variables:
+#   user host time[:strftime, default %H:%M] date[:strftime, default %Y-%m-%d]
+#   session window group pane_cwd pane_command sessions windows clients
+#   load mem mem_percent battery uptime      (mem, battery and uptime: Linux only)
+#   git git_branch git_dirty                 (of the repository around the session's directory)
+[status]
+visible = true
+lines = [
+  "#{user}@#{host}#{fill}#{time:%H:%M}",
+  "#{?git,⎇ #{git_branch}#{git_dirty},}",
+  "#{date:%a %d %b}",
+  "load #{load}#{fill}mem #{mem_percent}",
+]
 
 # The popup shell (toggle-popup): a floating shell in the current directory.
 [popup]
