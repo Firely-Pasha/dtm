@@ -1,6 +1,7 @@
 //! Pseudo-terminal spawning and async I/O.
 
 use std::io;
+use std::io::Read;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -154,19 +155,11 @@ impl Pty {
     pub fn foreground_cmdline(&self) -> Option<String> {
         let pg = self.foreground_pgrp().filter(|&pg| pg != self.pid as i32)?;
         let mut args = crate::sysproc::cmdline(pg)?;
-        if let Some(program) = args.first_mut() {
-            let path = Path::new(program);
-            if path.is_absolute()
-                && let Some(name) = path.file_name()
-                && let Some(search) = std::env::var_os("PATH")
-                && let Some(found) = std::env::split_paths(&search).map(|dir| dir.join(name)).find(|p| {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-                })
-                && std::fs::canonicalize(&found).ok().zip(std::fs::canonicalize(path).ok()).is_some_and(|(a, b)| a == b)
-            {
-                *program = name.to_string_lossy().into_owned();
-            }
+        if let Some(program) = args.first_mut()
+            && let Some(search) = std::env::var_os("PATH")
+            && let Some(name) = path_command_name(Path::new(program), &search)
+        {
+            *program = name;
         }
         (!args.is_empty()).then(|| crate::project::quote_args(&args))
     }
@@ -176,6 +169,50 @@ impl Pty {
         let pg = self.foreground_pgrp().unwrap_or(self.pid as i32);
         crate::sysproc::name(pg)
     }
+}
+
+/// Return the executable's basename when the first PATH entry resolves to it.
+/// Nix packages commonly expose a shell wrapper that execs the actual binary.
+fn path_command_name(program: &Path, search: &std::ffi::OsStr) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !program.is_absolute() {
+        return None;
+    }
+    let name = program.file_name()?;
+    let found = std::env::split_paths(search).map(|dir| dir.join(name)).find(|p| {
+        std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })?;
+    let target = std::fs::canonicalize(program).ok()?;
+    let candidate = std::fs::canonicalize(&found).ok()?;
+    if candidate == target || wrapper_target(&candidate).as_deref() == Some(target.as_path()) {
+        Some(name.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+/// Recognize a simple wrapper ending in `exec /absolute/program "$@"` without running it.
+fn wrapper_target(path: &Path) -> Option<PathBuf> {
+    const MAX_WRAPPER: u64 = 64 * 1024;
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_WRAPPER {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(MAX_WRAPPER + 1).read_to_string(&mut text).ok()?;
+    if !text.starts_with("#!") {
+        return None;
+    }
+    let line = text.lines().rev().map(str::trim).find(|line| !line.is_empty() && !line.starts_with('#'))?;
+    if !line.ends_with("\"$@\"") {
+        return None;
+    }
+    let words = crate::command::split_words(line).ok()?;
+    if words.len() != 3 || words[0] != "exec" || words[2] != "$@" || !Path::new(&words[1]).is_absolute() {
+        return None;
+    }
+    std::fs::canonicalize(&words[1]).ok()
 }
 
 impl Drop for Pty {
@@ -188,4 +225,36 @@ impl Drop for Pty {
 
 pub fn default_shell() -> String {
     std::env::var("SHELL").ok().filter(|s| Path::new(s).exists()).unwrap_or_else(|| "/bin/sh".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn command_name_accepts_nix_style_wrapper_and_respects_path_order() {
+        let dir = std::env::temp_dir().join(format!("dtm-wrapper-test-{}", std::process::id()));
+        let bin = dir.join("bin");
+        let other = dir.join("other");
+        let actual = dir.join("store").join("nvim");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::create_dir_all(actual.parent().unwrap()).unwrap();
+        std::fs::write(&actual, "binary").unwrap();
+        let wrapper = bin.join("nvim");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nexport SETTING=1\nexec \"{}\" \"$@\"\n", actual.display())).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(path_command_name(&actual, bin.as_os_str()).as_deref(), Some("nvim"));
+
+        let earlier = other.join("nvim");
+        std::fs::write(&earlier, "different program").unwrap();
+        std::fs::set_permissions(&earlier, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let search = std::env::join_paths([&other, &bin]).unwrap();
+        assert_eq!(path_command_name(&actual, &search), None);
+
+        std::fs::write(&wrapper, format!("#!/bin/sh\nexec \"{}\" '$@'\n", actual.display())).unwrap();
+        assert_eq!(path_command_name(&actual, bin.as_os_str()), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
