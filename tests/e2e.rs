@@ -1049,6 +1049,8 @@ async fn project_runs_commands_in_their_paths_and_starts_windows_lazily() {
         "name: demo\nwindows:\n  - name: edit\n    layout:\n      split: columns\n      panes:\n        - command: echo A$((1+1)); pwd\n        - path: sub\n          command: echo B$((2+2)); pwd\n  - name: second\n    command: touch started\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("A2").await;
     h.wait_text("B4").await;
     let text = h.text();
@@ -1070,6 +1072,8 @@ async fn project_lazy_false_starts_everything_at_once() {
     let proj = env.dir.join("proj");
     write(&proj.join("project.dtm.yaml"), "lazy: false\nwindows:\n  - command: echo one\n  - command: touch eager\n");
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("one").await;
     let eager = proj.join("eager");
     eventually("eager window started", || eager.exists()).await;
@@ -1081,6 +1085,8 @@ async fn plain_dtm_opens_the_project_here_and_reattaches() {
     let proj = env.dir.join("proj");
     write(&proj.join("project.dtm.yaml"), "name: again\nwindows:\n  - name: w\n    command: echo X >> ran.txt\n");
     let mut h = env.client_in(Some(&proj), &[], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("1 w").await;
     let ran = proj.join("ran.txt");
     eventually("command ran", || lines(&ran) == 1).await;
@@ -1105,6 +1111,90 @@ async fn invalid_project_is_reported_before_anything_starts() {
     write(&proj.join("project.dtm.yaml"), "windows:\n  - layout:\n      split: rows\n      panes:\n        - {}\n");
     let (ok, out) = env.run_with(&["open", proj.to_str().unwrap()], &[]);
     assert!(!ok && out.contains("split needs at least 2 panes"), "{out}");
+}
+
+#[tokio::test]
+async fn new_project_waits_for_a_sidebar_window_choice() {
+    let env = Env::new("project-waits-for-choice", "");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "name: waiting\nwindows:\n  - {name: first, command: 'touch first-started; echo FIRST_STARTED'}\n  - {name: eager, lazy: false, focus: true, command: 'touch eager-started; echo EAGER_STARTED'}\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("1 first").await;
+    h.wait_text(SIDEBAR_HINT).await;
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert!(!proj.join("first-started").exists() && !proj.join("eager-started").exists());
+    assert!(!h.text().contains("FIRST_STARTED") && !h.text().contains("EAGER_STARTED"), "{}", h.text());
+    h.wait_text("Not loaded").await;
+    h.send(&format!("{CTRL_A}d"));
+    h.wait_exit().await;
+    let mut attached = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    attached.wait_text(SIDEBAR_HINT).await;
+    attached.wait_text("Not loaded").await;
+    assert!(!attached.text().contains("FIRST_STARTED") && !attached.text().contains("EAGER_STARTED"));
+    attached.send("\r");
+    attached.wait_text("FIRST_STARTED").await;
+    eventually("eager window started", || proj.join("eager-started").exists()).await;
+    attached.send(&format!("{CTRL_A}2"));
+    attached.wait_text("EAGER_STARTED").await;
+}
+
+#[tokio::test]
+async fn project_sidebar_can_open_a_nonfirst_window() {
+    let env = Env::new("project-pick-window", "");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "windows:\n  - {name: first, command: 'touch first-started'}\n  - {name: second, command: 'touch second-started'}\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("j\r");
+    eventually("second window started", || proj.join("second-started").exists()).await;
+    assert!(!proj.join("first-started").exists());
+}
+
+#[tokio::test]
+async fn new_project_shows_an_unfocused_unloaded_island() {
+    use dtm::term::cell::Color;
+    let env = Env::new("project-unloaded-island", "[options]\nstyle = \"islands\"\n");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "windows:\n  - {name: first, command: 'touch started'}\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("Not loaded").await;
+    h.wait_text(SIDEBAR_HINT).await;
+    assert_eq!((h.screen.cell(24, 0).ch, h.screen.cell(24, 0).attrs.fg), ('╭', Color::Idx(8)), "{}", h.text());
+    assert_eq!(h.screen.cell(99, 29).ch, '╯');
+    assert!(!proj.join("started").exists());
+    h.send("\r");
+    eventually("chosen window starts", || proj.join("started").exists()).await;
+}
+
+#[tokio::test]
+async fn unloaded_project_island_can_take_focus_without_starting() {
+    use dtm::term::cell::Color;
+    let env = Env::new("project-focus-unloaded", "[options]\nstyle = \"islands\"\n");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "windows:\n  - {name: first, command: 'touch started'}\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("Not loaded").await;
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\x0c");
+    h.wait_screen("placeholder focused", |s| s.cell(24, 0).attrs.fg == Color::Idx(2)).await;
+    assert!(!proj.join("started").exists());
+    h.send("\r");
+    eventually("chosen window starts", || proj.join("started").exists()).await;
+}
+
+#[tokio::test]
+async fn clicking_unloaded_project_island_focuses_it() {
+    use dtm::term::cell::Color;
+    let env = Env::new("project-click-unloaded", "[options]\nstyle = \"islands\"\n");
+    let proj = env.dir.join("proj");
+    write(&proj.join("project.dtm.yaml"), "windows:\n  - {name: first, command: 'touch started'}\n");
+    let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text("Not loaded").await;
+    h.send(&sgr_click((40, 10)));
+    h.wait_screen("placeholder focused", |s| s.cell(24, 0).attrs.fg == Color::Idx(2)).await;
+    assert!(!proj.join("started").exists());
+    h.send("o");
+    eventually("chosen window starts", || proj.join("started").exists()).await;
 }
 
 #[tokio::test]
@@ -1137,6 +1227,8 @@ async fn export_writes_the_layout_and_reopens() {
     // The exported file opens as a second session with the same two panes.
     write(&out, &yaml.replace("name: ex", "name: ex2"));
     let mut h2 = env.client(&["open", target], 120, 30);
+    h2.wait_text(SIDEBAR_HINT).await;
+    h2.send("\r");
     h2.wait_text("1 sh").await;
     h2.wait_for("both panes", |t| t.lines().any(|l| l.matches('│').count() >= 2)).await;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1153,6 +1245,8 @@ async fn export_updates_the_opened_file_and_keeps_its_name() {
     let file = proj.join("project.dtm.yaml");
     write(&file, "# my comment\nname: upd\nroot: .\nwindows:\n  - name: a\n    lazy: true\n  - name: b\n");
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("1 a").await;
     let (ok, msg) = env.run(&["export", "-t", "upd"]);
     assert!(ok, "{msg}");
@@ -1170,6 +1264,8 @@ async fn respawn_pane_restarts_it_with_a_new_id() {
     let secs = (20000 + std::process::id() % 10000).to_string();
     write(&proj.join("project.dtm.yaml"), &format!("name: rp\nwindows:\n  - command: echo Z >> runs.txt; exec sleep {secs}\n"));
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     let runs = proj.join("runs.txt");
     eventually("first run", || lines(&runs) == 1).await;
     eventually("sleep up", || count_procs(&["sleep", &secs]) == 1).await;
@@ -1202,6 +1298,8 @@ async fn respawn_window_restores_the_project_layout() {
         "name: rw\nwindows:\n  - layout:\n      split: columns\n      panes:\n        - command: echo W >> w.txt\n        - command: echo W >> w.txt\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     let w = proj.join("w.txt");
     eventually("both ran", || lines(&w) == 2).await;
     h.send(&format!("{CTRL_A}-"));
@@ -1253,6 +1351,8 @@ async fn named_projects_are_edited_listed_opened_and_removed() {
     assert_eq!(out.trim(), "foo");
 
     let mut h = env.client(&["open", "foo"], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("N6").await;
     assert!(h.text().contains("1 named"), "{}", h.text());
     drop(h);
@@ -1275,6 +1375,8 @@ async fn sidebar_export_updates_the_named_project_and_keeps_its_root() {
     let file = env.dir.join("projects/np.yaml");
     write(&file, &format!("name: np\nroot: {}\nwindows:\n  - name: one\n    path: src\n", work.display()));
     let mut h = env.client(&["open", "np"], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("1 one").await;
     h.send(&format!("{CTRL_A}w"));
     h.wait_text(SIDEBAR_HINT).await;
@@ -1303,6 +1405,8 @@ async fn search_filters_windows_fuzzily() {
         "name: sr\nwindows:\n  - name: alpha\n    command: echo AA$((1+1))\n  - name: server\n    command: echo SRV$((3+4))\n  - name: shell\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("AA2").await;
 
     h.send(&format!("{CTRL_A}f"));
@@ -1338,6 +1442,8 @@ async fn pane_command_runs_before_every_command_including_later_splits() {
         "name: pc\npane_command: export X=$((40+2))\nwindows:\n  - name: w\n    command: echo V$X\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("V42").await;
     h.send(&format!("{CTRL_A}|"));
     h.send("echo W$X\r");
@@ -1391,6 +1497,8 @@ async fn dock_panes_start_lazily_take_focus_and_can_be_added_closed_and_exported
         "name: dk\ndock:\n  visible: true\n  width: 40%\n  panes:\n    - name: one\n      command: echo D$((1+1)); touch d1\n    - name: two\n      command: touch d2\nwindows:\n  - name: main\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("D2").await;
     let text = h.text();
     assert!(h.screen.row_text(0).contains(" one ") && h.screen.row_text(0).contains(" two"), "tabs:\n{text}");
@@ -1456,6 +1564,8 @@ async fn prefix_h_l_resize_the_focused_sidebar_and_dock() {
         "name: pr\ndock:\n  visible: true\n  width: 40%\n  panes:\n    - command: echo DK\nwindows:\n  - name: main\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("DK").await;
     h.wait_cell(23, 5, '│').await; // sidebar separator, width 24
     h.wait_cell(72, 5, '│').await; // dock separator, width 48
@@ -1509,6 +1619,8 @@ async fn project_sidebar_width_is_applied_not_exported_and_o_opens() {
     let file = proj.join("project.dtm.yaml");
     write(&file, "name: sbp\nsidebar:\n  width: 30\nwindows:\n  - name: a\n  - name: b\n");
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("1 a").await;
     h.wait_cell(29, 5, '│').await;
     h.send(&format!("{CTRL_A}w"));
@@ -1585,6 +1697,8 @@ async fn export_saves_the_directory_a_pane_changed_to() {
     let file = proj.join("project.dtm.yaml");
     write(&file, "name: ec\nwindows:\n  - name: one\n  - name: two\n    layout:\n      split: columns\n      panes:\n        - {}\n        - {}\n");
     let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("1 one").await;
     h.send("cd deep/er; echo SYNC$((1+1))\r");
     h.wait_text("SYNC2").await;
@@ -1796,6 +1910,8 @@ async fn groups_tag_windows_and_open_them_by_tags() {
         "name: gr\ngroups:\n  - {name: code, tag: g}\n  - {name: ops, tag: u}\nwindows:\n  - {name: edit, group: code, command: \"echo EDIT$((1+0))\"}\n  - {name: logs, group: ops, command: \"echo LOGS$((1+0))\"}\n  - {name: test, group: code, command: \"echo TEST$((1+0))\"}\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("EDIT1").await;
     // A group's windows sit together under its heading, tagged by their place in it.
     assert_eq!(sidebar_lines(&h, 6), ["code g", "1 edit", "2 test", "", "ops u", "1 logs"], "{}", h.text());
@@ -1902,6 +2018,8 @@ async fn hovering_a_window_in_the_sidebar_does_not_start_it() {
         "name: hv\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("ONE1").await;
     h.send(&format!("{CTRL_A}w"));
     h.wait_text(SIDEBAR_HINT).await;
@@ -1923,6 +2041,8 @@ async fn search_lists_results_group_by_group() {
         "name: sg\ngroups:\n  - {name: code, tag: g}\n  - {name: ops, tag: u}\nwindows:\n  - {name: serve-a, group: code, lazy: false}\n  - {name: other, group: code}\n  - {name: serve-b, group: ops}\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("serve-a").await;
     h.send(&format!("{CTRL_A}f"));
     h.send("serve");
@@ -1940,6 +2060,8 @@ async fn an_unloaded_window_is_loaded_with_o_or_enter() {
         "name: ld\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n  - name: three\n    command: echo THREE$((1+2))\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("ONE1").await;
     // Hover window two, then leave the sidebar for its (empty) pane area.
     h.send(&format!("{CTRL_A}w"));
@@ -2006,7 +2128,10 @@ async fn islands_style_boxes_the_dock() {
         "name: dk\ndock:\n  width: 40\n  visible: true\n  panes:\n    - {name: logs, command: \"echo DOCK$((1+1))\"}\nwindows:\n  - {name: w}\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("DOCK2").await;
+    h.wait_for("window opened", |t| !t.contains(SIDEBAR_HINT)).await;
     let text = h.text();
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines[0].trim_end().ends_with('╮') && lines[0].matches('╭').count() == 3, "{text}");
@@ -2026,6 +2151,8 @@ async fn islands_not_loaded_placeholder_is_a_box_and_panes_lose_focus_in_the_sid
         "name: if\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("ONE1").await;
     // the sidebar is 24 columns wide, so the pane's box starts at column 24
     assert_eq!((h.screen.cell(24, 0).ch, h.screen.cell(24, 0).attrs.fg), ('╭', Color::Idx(2)), "{}", h.text());
@@ -2117,6 +2244,8 @@ async fn prefix_n_and_p_do_not_load_windows_that_have_not_started() {
         "name: np\nwindows:\n  - name: one\n    command: echo ONE$((1+0))\n  - name: two\n    command: echo TWO$((1+1))\n  - name: three\n    command: echo THREE$((1+2))\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("ONE1").await;
     h.send(&format!("{CTRL_A}n"));
     h.wait_text("Not loaded").await;
@@ -2436,6 +2565,8 @@ async fn dragging_the_dock_edge_resizes_the_dock() {
         "name: dk\ndock:\n  visible: true\n  width: 40%\n  panes:\n    - command: echo DK\nwindows:\n  - name: main\n",
     );
     let mut h = env.client(&["open", proj.to_str().unwrap()], 120, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("DK").await;
     h.wait_cell(72, 5, '│').await; // the dock's separator, width 48
     h.send(&sgr_drag((72, 5), (62, 5)));
@@ -2448,6 +2579,8 @@ async fn dragging_a_sidebar_entry_moves_the_window() {
     let proj = env.dir.join("proj");
     write(&proj.join("project.dtm.yaml"), "name: ro\nwindows:\n  - name: aaa\n  - name: bbb\n  - name: ccc\n");
     let mut h = env.client(&["open", proj.to_str().unwrap()], 100, 30);
+    h.wait_text(SIDEBAR_HINT).await;
+    h.send("\r");
     h.wait_text("1 aaa").await;
     // rows 2, 3, 4 hold the three windows; drag the first one down two places
     h.send(&sgr_drag((5, 2), (5, 4)));

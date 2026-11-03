@@ -69,25 +69,32 @@ fn area(r: &Rect, islands: bool) -> (usize, usize, usize, usize) {
     if islands { (x + 1, y + 1, w.saturating_sub(2).max(1), h.saturating_sub(2).max(1)) } else { (x, y, w, h) }
 }
 
-/// Render `window` at `size`.
-pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16, u16), opts: RenderOpts) -> Canvas {
+/// Draw the placeholder shown before a window is loaded.
+pub fn render_unloaded(size: (u16, u16), opts: RenderOpts) -> Canvas {
     let RenderOpts { islands, focused, theme } = opts;
     let (cols, rows) = (size.0 as usize, size.1 as usize);
     let mut canvas = Canvas::new(cols, rows);
-    if window.pending {
-        // The placeholder is an island of its own, so the layout does not jump on loading.
-        if islands {
-            draw_box(&mut canvas, (0, 0, cols, rows), theme.border(focused));
-        }
-        let text = "Not loaded";
-        let attrs = theme.muted();
-        let (inner_w, inner_h) = if islands { (cols.saturating_sub(2), rows.saturating_sub(2)) } else { (cols, rows) };
-        let (ox, oy) = if islands { (1, 1) } else { (0, 0) };
-        canvas.put_str(ox + inner_w.saturating_sub(text.len()) / 2, oy + inner_h / 2, text, attrs, inner_w);
-        let hint = "press o or Enter to load";
-        canvas.put_str(ox + inner_w.saturating_sub(hint.len()) / 2, oy + inner_h / 2 + 1, hint, attrs, inner_w);
-        return canvas;
+    if islands {
+        draw_box(&mut canvas, (0, 0, cols, rows), theme.border(focused));
     }
+    let text = "Not loaded";
+    let attrs = theme.muted();
+    let (inner_w, inner_h) = if islands { (cols.saturating_sub(2), rows.saturating_sub(2)) } else { (cols, rows) };
+    let (ox, oy) = if islands { (1, 1) } else { (0, 0) };
+    canvas.put_str(ox + inner_w.saturating_sub(text.len()) / 2, oy + inner_h / 2, text, attrs, inner_w);
+    let hint = "press o or Enter to load";
+    canvas.put_str(ox + inner_w.saturating_sub(hint.len()) / 2, oy + inner_h / 2 + 1, hint, attrs, inner_w);
+    canvas
+}
+
+/// Render `window` at `size`.
+pub fn render_window(window: &Window, panes: &HashMap<PaneId, Pane>, size: (u16, u16), opts: RenderOpts) -> Canvas {
+    if window.pending {
+        return render_unloaded(size, opts);
+    }
+    let RenderOpts { islands, focused, theme } = opts;
+    let (cols, rows) = (size.0 as usize, size.1 as usize);
+    let mut canvas = Canvas::new(cols, rows);
     let active_box = |id: PaneId| focused && id == window.active;
     let rects = window.rects(size, if islands { Spacing::ISLANDS } else { Spacing::CLASSIC });
     let mut owner: Vec<Option<PaneId>> = vec![None; cols * rows];

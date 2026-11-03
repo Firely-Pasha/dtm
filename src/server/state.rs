@@ -165,6 +165,10 @@ pub struct Session {
     pub windows: Vec<Window>,
     pub groups: Vec<Group>,
     pub active: usize,
+    /// A newly opened project has no window until the user chooses one.
+    pub awaiting_window: bool,
+    /// Eager project windows start after the first window is chosen.
+    pub deferred_eager: Vec<WindowId>,
     /// Size of the pane area, set by the owning client.
     pub size: (u16, u16),
     pub owner: Option<ClientId>,
@@ -529,6 +533,8 @@ mod tests {
                 Group { id: 3, name: "c".into(), tag: 'q' },
             ],
             active: 0,
+            awaiting_window: false,
+            deferred_eager: Vec::new(),
             size: (80, 24),
             owner: None,
             cwd: PathBuf::new(),

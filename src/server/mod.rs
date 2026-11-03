@@ -379,12 +379,19 @@ impl Server {
 
     /// Point a client at a session, making it the size owner.
     pub fn switch_client(&mut self, cid: ClientId, sid: SessionId) {
+        let awaiting_window = self.sessions.iter().any(|s| s.id == sid && s.awaiting_window);
         let Some(c) = self.clients.get_mut(&cid) else { return };
         let old = c.session.replace(sid);
         c.prev = None;
         c.prompt = None;
         c.search = None;
         c.prefix = None;
+        if awaiting_window {
+            c.sidebar_mode = SidebarMode::Windows;
+            c.sidebar_visible = true;
+            c.sidebar_focus = Some(0);
+            c.sidebar_max = c.cols < self.cfg.sidebar.width.max(MIN_ISLAND_SIDEBAR) + MIN_CONTENT;
+        }
         if let Some(old) = old.filter(|&o| o != sid) {
             self.client_left(old, cid);
         }
@@ -695,6 +702,9 @@ impl Server {
             // (A prompt or the help takes the focus itself.)
             let focused = c.sidebar_focus.is_none() && !self.extra_focused(s) && !c.overlay();
             let content = contents.entry((s.id, focused)).or_insert_with(|| {
+                if s.awaiting_window {
+                    return render::render_unloaded(s.size, RenderOpts { islands: self.cfg.islands, focused, theme: &self.cfg.theme });
+                }
                 render::render_window(
                     s.active_window(),
                     &self.panes,
@@ -802,7 +812,7 @@ impl Server {
                             }
                         }
                         let label = Self::window_label(s, i, false);
-                        Item { label, marks, active: i == s.active, selected: sidebar_focused && c.sidebar_focus == Some(row), heading: false }
+                        Item { label, marks, active: !s.awaiting_window && i == s.active, selected: sidebar_focused && c.sidebar_focus == Some(row), heading: false }
                     })
                     .collect();
                 let sub = match &c.search {

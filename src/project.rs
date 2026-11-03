@@ -598,15 +598,14 @@ pub fn quote_args(args: &[String]) -> String {
     args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ")
 }
 
-fn spec_of(node: &PlanNode, inherited: &Path, base: &Path, home: &Path, single_leaf: bool) -> NodeSpec {
+fn spec_of(node: &PlanNode, inherited: &Path, base: &Path, home: &Path) -> NodeSpec {
     let rel = |cwd: &Path| -> Option<String> {
         if clean(cwd) == clean(inherited) { None } else { collapse(cwd, base, home).or_else(|| Some(".".into())) }
     };
     match node {
-        PlanNode::Pane { cwd, command, focus } => NodeSpec {
+        PlanNode::Pane { cwd, command, .. } => NodeSpec {
             path: rel(cwd),
             command: command.clone(),
-            focus: (*focus && !single_leaf).then_some(true),
             ..Default::default()
         },
         PlanNode::Split { axis, children } => NodeSpec {
@@ -618,7 +617,7 @@ fn spec_of(node: &PlanNode, inherited: &Path, base: &Path, home: &Path, single_l
                 children
                     .iter()
                     .map(|c| {
-                        let mut s = spec_of(&c.node, inherited, base, home, single_leaf);
+                        let mut s = spec_of(&c.node, inherited, base, home);
                         s.size = c.size.map(|z| match z {
                             Size::Percent(p) => SizeSpec::Text(format!("{}%", (p.round() as i64).max(1))),
                             Size::Cells(n) => SizeSpec::Cells(n),
@@ -641,8 +640,7 @@ pub fn from_plan(plan: &Plan, base: &Path, home: &Path) -> ProjectFile {
     let windows = plan
         .windows
         .iter()
-        .enumerate()
-        .map(|(i, w)| {
+        .map(|w| {
             let leaves = w.tree.leaves();
             let first = leaves[0].0.to_path_buf();
             let shared = leaves.iter().all(|(c, ..)| clean(c) == clean(&first));
@@ -655,12 +653,11 @@ pub fn from_plan(plan: &Plan, base: &Path, home: &Path) -> ProjectFile {
                 name: w.name.clone(),
                 group: w.group.clone().filter(|_| write_groups),
                 path,
-                focus: (i == plan.focus && plan.windows.len() > 1 && i != 0).then_some(true),
                 ..Default::default()
             };
             match &w.tree {
                 PlanNode::Pane { command, .. } => spec.command = command.clone(),
-                tree => spec.layout = Some(spec_of(tree, &inherited, &base, home, leaves.len() == 1)),
+                tree => spec.layout = Some(spec_of(tree, &inherited, &base, home)),
             }
             spec
         })
@@ -927,8 +924,15 @@ mod tests {
         assert_eq!(f.windows[0].path.as_deref(), Some("x"));
         assert_eq!(f.windows[0].command.as_deref(), Some("vim"));
         assert!(f.windows[0].layout.is_none());
-        assert_eq!(f.windows[1].focus, Some(true));
+        assert_eq!(f.windows[1].focus, None);
         assert_eq!(f.windows[1].path, None);
+    }
+
+    #[test]
+    fn export_omits_window_and_nested_pane_focus() {
+        let p = plan("windows:\n  - name: first\n    layout:\n      split: columns\n      panes:\n        - {command: vim, focus: true}\n        - {}\n  - {name: second, focus: true}\n", "/r");
+        let yaml = serde_norway::to_string(&from_plan(&p, Path::new("/r"), Path::new(HOME))).unwrap();
+        assert!(!yaml.contains("focus:"), "{yaml}");
     }
 
     #[test]
@@ -957,7 +961,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("dtm-root-{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
         let target = tmp.join("p.yaml");
-        std::fs::write(&target, "root: /code/app\npane_command: echo hi\nwindows:\n  - {name: a}\n").unwrap();
+        std::fs::write(&target, "root: /code/app\npane_command: echo hi\nwindows:\n  - {name: a, focus: true}\n").unwrap();
         let p = Plan {
             name: "app".into(),
             root: "/code/app".into(),
@@ -979,6 +983,7 @@ mod tests {
         assert_eq!(f.root.as_deref(), Some("/code/app"));
         assert_eq!(f.pane_command.as_deref(), Some("echo hi"));
         assert_eq!(f.windows[0].path.as_deref(), Some("src"));
+        assert!(!std::fs::read_to_string(&target).unwrap().contains("focus:"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

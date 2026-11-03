@@ -347,7 +347,12 @@ impl Server {
         // A window that has not started has no pane to type into: `o` or Enter loads it.
         if let Some(sid) = self.unloaded_window(cid) {
             if matches!((ev.key, ev.mods), (Key::Enter, 0) | (Key::Char('o'), 0)) {
-                self.focus_shown(sid);
+                if let Some(s) = self.sessions.iter().find(|s| s.id == sid && s.awaiting_window) {
+                    let wi = s.active;
+                    self.open_window(sid, wi);
+                } else {
+                    self.focus_shown(sid);
+                }
                 self.mark_dirty();
             }
             return;
@@ -359,7 +364,7 @@ impl Server {
     fn unloaded_window(&self, cid: ClientId) -> Option<super::state::SessionId> {
         let sid = self.clients.get(&cid)?.session;
         let s = self.sessions.iter().find(|s| Some(s.id) == sid)?;
-        (s.active_window().pending && self.focused_pane_in(s).is_none()).then_some(s.id)
+        (s.awaiting_window || (s.active_window().pending && self.focused_pane_in(s).is_none())).then_some(s.id)
     }
 
     fn active_pane_in_copy_mode(&self, cid: ClientId) -> bool {

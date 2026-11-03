@@ -97,6 +97,8 @@ impl Server {
             windows: vec![window],
             groups: vec![Group { id: 1, name: DEFAULT_GROUP.into(), tag }],
             active: 0,
+            awaiting_window: false,
+            deferred_eager: Vec::new(),
             size,
             owner: None,
             cwd: cwd.unwrap_or_default(),
@@ -213,6 +215,7 @@ impl Server {
         // A window the sidebar is already showing still counts as another one until it is opened.
         let changed = s.active != wi || s.recent.first().is_some_and(|&r| r != id);
         self.select_window(sid, wi);
+        self.sessions[si].awaiting_window = false;
         if changed {
             self.focus_top_left(si, wi);
         }
@@ -222,6 +225,7 @@ impl Server {
     /// The window a session shows counts as focused (a session chosen, not just hovered).
     pub(super) fn focus_shown(&mut self, sid: SessionId) {
         let Some(si) = self.session_index(sid) else { return };
+        if self.sessions[si].awaiting_window { return; }
         let id = self.sessions[si].active_window().id;
         self.remember_window(si, id);
     }

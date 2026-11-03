@@ -117,6 +117,16 @@ impl Server {
         if cx >= s.size.0 as usize || cy >= s.size.1 as usize {
             return;
         }
+        if s.awaiting_window {
+            if left_press {
+                if let Some(c) = self.clients.get_mut(&cid) {
+                    c.sidebar_focus = None;
+                }
+                self.sessions[si].dock.focused = false;
+                self.mark_dirty();
+            }
+            return;
+        }
         if left_press && !s.active_window().zoomed {
             let whole = Rect::new(0, 0, s.size.0, s.size.1);
             if let Some(b) = s.active_window().root.hit_border(whole, self.spacing(), cx as u16, cy as u16) {

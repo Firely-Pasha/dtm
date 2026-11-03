@@ -103,12 +103,15 @@ impl Server {
             })
             .collect();
         let id = self.alloc_session_id();
+        let deferred_eager = windows.iter().zip(&plan.windows).filter(|(_, w)| !w.lazy).map(|(w, _)| w.id).collect();
         self.sessions.push(super::state::Session {
             id,
             name: plan.name.clone(),
             windows,
             groups,
-            active: plan.focus.min(plan.windows.len().saturating_sub(1)),
+            active: 0,
+            awaiting_window: true,
+            deferred_eager,
             size,
             owner: None,
             cwd: plan.root.clone(),
@@ -138,15 +141,6 @@ impl Server {
             full_size: (0, 0),
         });
         self.had_session = true;
-        let si = self.sessions.len() - 1;
-        let eager: Vec<usize> =
-            plan.windows.iter().enumerate().filter(|(_, w)| !w.lazy).map(|(i, _)| i).collect();
-        for wi in eager {
-            if let Err(e) = self.start_window(si, wi) {
-                self.remove_session(id);
-                return Err(e);
-            }
-        }
         Ok(id)
     }
 
@@ -156,12 +150,21 @@ impl Server {
     pub fn start_visible_windows(&mut self) {
         self.start_visible_dock();
         let mut jobs: Vec<(usize, usize)> = Vec::new();
+        for (si, s) in self.sessions.iter_mut().enumerate() {
+            if !s.awaiting_window {
+                for id in std::mem::take(&mut s.deferred_eager) {
+                    if let Some(wi) = s.windows.iter().position(|w| w.id == id && w.pending) {
+                        jobs.push((si, wi));
+                    }
+                }
+            }
+        }
         for (si, s) in self.sessions.iter().enumerate() {
-            if s.windows.is_empty() || !self.clients.values().any(|c| c.session == Some(s.id)) {
+            if s.awaiting_window || s.windows.is_empty() || !self.clients.values().any(|c| c.session == Some(s.id)) {
                 continue;
             }
             let w = s.active_window();
-            if w.pending && s.recent.first() == Some(&w.id) {
+            if w.pending && s.recent.first() == Some(&w.id) && !jobs.contains(&(si, s.active)) {
                 jobs.push((si, s.active));
             }
         }

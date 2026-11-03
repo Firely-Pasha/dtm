@@ -35,7 +35,6 @@ dock:
 windows:
   - name: edit
     group: code           # windows without `group` are in `main`
-    focus: true           # shown first (default: the first window)
     layout:
       split: columns      # columns = side by side, rows = stacked
       panes:

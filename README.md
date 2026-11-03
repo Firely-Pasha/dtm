@@ -238,7 +238,6 @@ groups:                   # optional: window groups, in order (tag: one letter, 
 windows:
   - name: edit
     group: code           # windows without `group` are in `main`
-    focus: true           # shown first
     layout:
       split: columns      # columns = side by side, rows = stacked
       panes:
@@ -265,12 +264,13 @@ windows:
   pane's own command, e.g. `pane_command: source .venv/bin/activate`. It also
   applies to panes you create later in the session (splits, new windows, the
   popup, dock panes) and to respawned ones.
-- **Lazy start.** Only the first window is created when the project opens; the
-  others get their panes and run their commands the first time you open them
+- **Lazy start.** A new project opens with the sidebar focused and no window
+  running. Choose a window to start it. Other windows get their panes and run
+  their commands the first time you open them
   (a `…` marks them in the sidebar; just moving the selection over one shows
   "Not loaded" and starts nothing, and so does stepping onto it with `<prefix> n` /
   `p`; with focus on such a window, `o` or `Enter` loads it). Set `lazy: false` on the file or on a
-  window to start it at once.
+  window to start it when the first window is chosen.
 - **Opening.** `dtm` in a directory with a `project.dtm.yaml` opens it.
   `dtm open [FILE|DIR|NAME]` takes a file, a directory holding one, or a saved
   project. If a session with the project's name is already running, dtm attaches
@@ -282,7 +282,8 @@ windows:
   it a `root:`.
 - **Export.** `dtm export [FILE|DIR|NAME] [-t SESSION]` writes a running session
   as a project: the splits and their sizes, each pane's directory and, when a
-  program other than the shell is running, its command line. With no argument
+  program other than the shell is running, its command line. Window and pane
+  focus are not exported. With no argument
   it updates the file the session was opened from, or creates
   `project.dtm.yaml` in the session's directory. Paths are written relative to
   the file. A file without a `root` is written without one; a file that has
