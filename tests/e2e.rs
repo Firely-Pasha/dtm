@@ -392,9 +392,9 @@ async fn copy_mode_scrolls_yanks_and_pastes() {
 
     h.send(&format!("{CTRL_A}["));
     h.wait_text("[copy 0/").await;
-    h.send("g");
+    h.send("gg");
     h.wait_for("top of history", |t| t.contains("seq 1 100") && t.contains("[copy")).await;
-    h.send("y");
+    h.send("yy");
     h.wait_text("copied 11 characters").await;
     // copying keeps copy mode (and the cursor); `q` leaves it
     assert!(h.text().contains("[copy"), "still in copy mode:\n{}", h.text());
@@ -406,7 +406,7 @@ async fn copy_mode_scrolls_yanks_and_pastes() {
     h.send("\x15");
 
     // selection across lines: select two lines near the top and yank; the selection ends
-    h.send(&format!("{CTRL_A}[g"));
+    h.send(&format!("{CTRL_A}[gg"));
     h.send("vjy");
     h.wait_text("copied").await;
     h.send("q");
@@ -560,13 +560,45 @@ async fn shift_v_selects_whole_lines() {
     h.wait_text("1 sh").await;
     h.send("seq 1 100\r");
     h.wait_text("100").await;
-    h.send(&format!("{CTRL_A}[g"));
+    h.send(&format!("{CTRL_A}[gg"));
     h.wait_text("[copy").await;
     // the first two history lines are "$ seq 1 100" and "1"
     h.send("lllVjy");
     h.wait_text("copied 13 characters").await;
     h.send(&format!("{CTRL_A}d"));
     h.wait_exit().await;
+}
+
+#[tokio::test]
+async fn copy_mode_keeps_a_snapshot_while_output_continues() {
+    let env = Env::new("copy-snapshot", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("printf 'SNAPSHOT_BEFORE\\n'; sleep 1; printf 'SNAPSHOT_AFTER\\n'\r");
+    h.wait_text("SNAPSHOT_BEFORE").await;
+    h.send(&format!("{CTRL_A}["));
+    h.wait_text("[copy").await;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert!(!h.text().contains("SNAPSHOT_AFTER\n"), "{}", h.text());
+    h.send("q");
+    h.wait_text("SNAPSHOT_AFTER").await;
+}
+
+#[tokio::test]
+async fn copy_mode_yanks_vim_text_objects() {
+    let env = Env::new("copy-text-object", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send("printf 'one (two [three]) end\\n'\r");
+    h.wait_text("one (two [three]) end").await;
+    h.send(&format!("{CTRL_A}["));
+    h.wait_text("[copy").await;
+    h.send("k0w2wyi[");
+    h.wait_text("copied 5 characters").await;
+    h.send("q");
+    h.wait_for("copy mode closes", |t| !t.contains("[copy")).await;
+    h.send(&format!("{CTRL_A}]"));
+    h.wait_text("$ three").await;
 }
 
 const SIDEBAR_HINT: &str = "j/k ⏎ x r g t n / e q";
@@ -2322,6 +2354,21 @@ fn sgr_drag(from: (u16, u16), to: (u16, u16)) -> String {
 
 fn sgr_click(at: (u16, u16)) -> String {
     format!("\x1b[<0;{};{}M\x1b[<0;{};{}m", at.0 + 1, at.1 + 1, at.0 + 1, at.1 + 1)
+}
+
+#[tokio::test]
+async fn mouse_drag_starts_selection_only_after_entering_another_cell() {
+    let env = Env::new("mouse-select-threshold", "");
+    let mut h = env.client(&[], 100, 30);
+    h.wait_text("1 sh").await;
+    h.send(&sgr_drag((30, 1), (30, 1)));
+    h.send("echo THRESHOLD_CHECK\r");
+    h.wait_text("THRESHOLD_CHECK").await;
+    assert!(!h.text().contains("[copy"), "{}", h.text());
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    h.send(&sgr_drag((30, 1), (31, 1)));
+    h.wait_text("y copies the selection").await;
+    h.wait_text("[copy").await;
 }
 
 #[tokio::test]

@@ -549,12 +549,7 @@ impl Server {
 
     fn pane_output(&mut self, id: PaneId, data: Vec<u8>) {
         let Some(p) = self.panes.get_mut(&id) else { return };
-        let history = p.screen.history_len();
         p.screen.feed(&data);
-        if let Some(copy) = p.copy.as_mut() {
-            copy.history_grew(p.screen.history_len().saturating_sub(history));
-            copy.clamp(&p.screen);
-        }
         let replies = p.screen.take_replies();
         if !replies.is_empty() {
             p.pty.write(replies);

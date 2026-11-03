@@ -70,6 +70,7 @@ impl Default for Modes {
     }
 }
 
+#[derive(Clone)]
 pub struct Screen {
     cols: usize,
     rows: usize,
@@ -83,6 +84,8 @@ pub struct Screen {
     tabs: Vec<bool>,
     modes: Modes,
     scrollback: VecDeque<Vec<Cell>>,
+    history_wrapped: VecDeque<bool>,
+    history_wrap_padding: VecDeque<bool>,
     history_limit: usize,
     last_char: char,
     replies: Vec<u8>,
@@ -143,6 +146,8 @@ impl Screen {
             tabs: default_tabs(cols),
             modes: Modes::default(),
             scrollback: VecDeque::new(),
+            history_wrapped: VecDeque::new(),
+            history_wrap_padding: VecDeque::new(),
             history_limit,
             last_char: ' ',
             replies: Vec::new(),
@@ -255,6 +260,9 @@ impl Screen {
         self.last_char = ch;
         if self.cursor.pending_wrap {
             if self.modes.autowrap {
+                let y = self.cursor.y;
+                self.grid_mut().wrapped[y] = true;
+                self.grid_mut().wrap_padding[y] = false;
                 self.cursor.x = 0;
                 self.linefeed();
             }
@@ -266,6 +274,8 @@ impl Screen {
                 let (x, y) = (self.cursor.x, self.cursor.y);
                 let b = self.blank();
                 self.grid_mut().rows[y][x] = b;
+                self.grid_mut().wrapped[y] = true;
+                self.grid_mut().wrap_padding[y] = true;
                 self.cursor.x = 0;
                 self.linefeed();
             } else {
@@ -369,11 +379,19 @@ impl Screen {
         for _ in 0..n {
             let g = self.grid_mut();
             let removed = g.rows.remove(t);
+            let wrapped = g.wrapped.remove(t);
+            let padding = g.wrap_padding.remove(t);
             g.rows.insert(b, blank.clone());
+            g.wrapped.insert(b, false);
+            g.wrap_padding.insert(b, false);
             if save && self.history_limit > 0 {
                 self.scrollback.push_back(removed);
+                self.history_wrapped.push_back(wrapped);
+                self.history_wrap_padding.push_back(padding);
                 if self.scrollback.len() > self.history_limit {
                     self.scrollback.pop_front();
+                    self.history_wrapped.pop_front();
+                    self.history_wrap_padding.pop_front();
                 }
             }
         }
@@ -386,6 +404,10 @@ impl Screen {
         for _ in 0..n {
             g.rows.remove(b);
             g.rows.insert(t, blank.clone());
+            g.wrapped.remove(b);
+            g.wrapped.insert(t, false);
+            g.wrap_padding.remove(b);
+            g.wrap_padding.insert(t, false);
         }
     }
 
@@ -420,6 +442,10 @@ impl Screen {
         let row = &mut self.grid_mut().rows[y];
         row[a..b].fill(blank);
         fix_row(row);
+        if b == self.cols {
+            self.grid_mut().wrapped[y] = false;
+            self.grid_mut().wrap_padding[y] = false;
+        }
     }
 
     fn erase_rows(&mut self, a: usize, b: usize) {
@@ -442,7 +468,7 @@ impl Screen {
                 self.erase_in_row(y, 0, x + 1);
             }
             2 => self.erase_rows(0, rows),
-            3 => self.scrollback.clear(),
+            3 => { self.scrollback.clear(); self.history_wrapped.clear(); self.history_wrap_padding.clear(); }
             _ => {}
         }
     }
@@ -796,10 +822,28 @@ impl Screen {
     // ---- resize ----
 
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        self.resize_tracking(cols, rows, &mut []);
+    }
+
+    /// Resize while preserving the supplied absolute history positions where possible.
+    pub fn resize_tracking(&mut self, cols: usize, rows: usize, positions: &mut [(usize, usize)]) {
         let cols = cols.max(1);
         let rows = rows.max(1);
         if cols == self.cols && rows == self.rows {
             return;
+        }
+        let mut reflow_pending = false;
+        if cols != self.cols {
+            if self.modes.alt_screen {
+                let alternate_cursor = self.cursor;
+                self.cursor = self.saved_alt.cursor;
+                let pending = self.reflow(cols, &mut []);
+                self.cursor.pending_wrap = pending;
+                self.saved_alt.cursor = self.cursor;
+                self.cursor = alternate_cursor;
+            } else {
+                reflow_pending = self.reflow(cols, positions);
+            }
         }
         if !self.modes.alt_screen {
             if rows < self.rows {
@@ -807,10 +851,16 @@ impl Screen {
                 let shift = (self.cursor.y + 1).saturating_sub(rows);
                 for _ in 0..shift {
                     let r = self.primary.rows.remove(0);
+                    let wrapped = self.primary.wrapped.remove(0);
+                    let padding = self.primary.wrap_padding.remove(0);
                     if self.history_limit > 0 {
                         self.scrollback.push_back(r);
+                        self.history_wrapped.push_back(wrapped);
+                        self.history_wrap_padding.push_back(padding);
                         if self.scrollback.len() > self.history_limit {
                             self.scrollback.pop_front();
+                            self.history_wrapped.pop_front();
+                            self.history_wrap_padding.pop_front();
                         }
                     }
                 }
@@ -819,15 +869,23 @@ impl Screen {
                 let pull = (rows - self.rows).min(self.scrollback.len());
                 for _ in 0..pull {
                     let r = self.scrollback.pop_back().unwrap();
+                    let wrapped = self.history_wrapped.pop_back().unwrap_or(false);
+                    let padding = self.history_wrap_padding.pop_back().unwrap_or(false);
                     self.primary.rows.insert(0, r);
+                    self.primary.wrapped.insert(0, wrapped);
+                    self.primary.wrap_padding.insert(0, padding);
                 }
                 self.cursor.y += pull;
             }
         }
         for g in [&mut self.primary, &mut self.alt] {
             g.rows.truncate(rows);
+            g.wrapped.truncate(rows);
+            g.wrap_padding.truncate(rows);
             while g.rows.len() < rows {
                 g.rows.push(vec![Cell::BLANK; g.cols]);
+                g.wrapped.push(false);
+                g.wrap_padding.push(false);
             }
             for r in &mut g.rows {
                 r.resize(cols, Cell::BLANK);
@@ -846,7 +904,101 @@ impl Screen {
         self.tabs = default_tabs(cols);
         self.cursor.x = self.cursor.x.min(cols - 1);
         self.cursor.y = self.cursor.y.min(rows - 1);
-        self.cursor.pending_wrap = false;
+        self.cursor.pending_wrap = reflow_pending;
+    }
+
+    fn reflow(&mut self, cols: usize, positions: &mut [(usize, usize)]) -> bool {
+        let old_cols = self.cols;
+        let history = self.scrollback.len();
+        let cursor_line = history + self.cursor.y;
+        let pending_wrap = self.cursor.pending_wrap;
+        let saved_line = history + self.saved.cursor.y;
+        let saved_col = self.saved.cursor.x;
+        let mut output = Vec::new();
+        let mut wrapped = Vec::new();
+        let mut padding = Vec::new();
+        let mut current = Vec::new();
+        let mut mapped_cursor = (0, 0);
+        let mut mapped_saved = None;
+        let mut mapped: Vec<Option<(usize, usize)>> = vec![None; positions.len()];
+        for (line, ((row, continuation), old_padding)) in self.scrollback.iter().zip(self.history_wrapped.iter()).zip(self.history_wrap_padding.iter())
+            .chain(self.primary.rows.iter().zip(self.primary.wrapped.iter()).zip(self.primary.wrap_padding.iter())).enumerate()
+        {
+            let content = if *continuation { old_cols.saturating_sub(usize::from(*old_padding)) } else {
+                let used = row.iter().rposition(|c| *c != Cell::BLANK).map_or(0, |i| i + 1);
+                let tracked = positions.iter().filter(|p| p.0 == line).map(|p| p.1.saturating_add(1)).max().unwrap_or(0).min(old_cols);
+                used.max(tracked).max(if line == cursor_line { self.cursor.x + 1 } else { 0 })
+            };
+            let mut x = 0;
+            while x < content {
+                if row[x].width == 0 { x += 1; continue; }
+                let width = row[x].width as usize;
+                if current.len() + width > cols {
+                    current.resize(cols, Cell::BLANK);
+                    output.push(std::mem::take(&mut current));
+                    wrapped.push(true);
+                    padding.push(true);
+                }
+                if line == cursor_line && (x..x + width).contains(&self.cursor.x) {
+                    mapped_cursor = (output.len(), current.len() + if pending_wrap { width } else { 0 });
+                }
+                if line == saved_line && (x..x + width).contains(&saved_col) {
+                    mapped_saved = Some((output.len(), current.len()));
+                }
+                for (i, &(tracked_line, tracked_col)) in positions.iter().enumerate() {
+                    if tracked_line == line && (x..x + width).contains(&tracked_col) {
+                        mapped[i] = Some((output.len(), current.len()));
+                    }
+                }
+                if width <= cols {
+                    current.push(row[x]);
+                    if width == 2 { current.push(row[x + 1]); }
+                }
+                x += width.max(1);
+                if current.len() == cols && (x < content || *continuation) {
+                    output.push(std::mem::take(&mut current));
+                    wrapped.push(true);
+                    padding.push(false);
+                }
+            }
+            if !continuation {
+                current.resize(cols, Cell::BLANK);
+                output.push(std::mem::take(&mut current));
+                wrapped.push(false);
+                padding.push(false);
+            }
+        }
+        if !current.is_empty() {
+            current.resize(cols, Cell::BLANK);
+            output.push(current);
+            wrapped.push(false);
+            padding.push(false);
+        }
+        let start = mapped_cursor.0.saturating_sub(self.rows - 1);
+        let keep_from = start.saturating_sub(self.history_limit);
+        for (position, new) in positions.iter_mut().zip(mapped) {
+            if let Some((line, col)) = new {
+                *position = (line.saturating_sub(keep_from), col);
+            }
+        }
+        self.scrollback = output[keep_from..start].iter().cloned().collect();
+        self.history_wrapped = wrapped[keep_from..start].iter().copied().collect();
+        self.history_wrap_padding = padding[keep_from..start].iter().copied().collect();
+        self.primary.rows = output[start..].iter().take(self.rows).cloned().collect();
+        self.primary.wrapped = wrapped[start..].iter().take(self.rows).copied().collect();
+        self.primary.wrap_padding = padding[start..].iter().take(self.rows).copied().collect();
+        self.primary.rows.resize_with(self.rows, || vec![Cell::BLANK; cols]);
+        self.primary.wrapped.resize(self.rows, false);
+        self.primary.wrap_padding.resize(self.rows, false);
+        self.primary.cols = cols;
+        self.cursor.y = mapped_cursor.0.saturating_sub(start).min(self.rows - 1);
+        let new_pending = mapped_cursor.1 >= cols;
+        self.cursor.x = mapped_cursor.1.min(cols - 1);
+        if let Some((line, col)) = mapped_saved {
+            self.saved.cursor.y = line.saturating_sub(start).min(self.rows - 1);
+            self.saved.cursor.x = col.min(cols - 1);
+        }
+        new_pending
     }
 }
 
@@ -1075,6 +1227,68 @@ mod tests {
         assert_eq!(s.text()[0], "abc");
         s.resize(8, 2);
         assert_eq!(s.cols(), 8);
+    }
+
+    #[test]
+    fn resize_reflows_wrapped_lines() {
+        let mut s = Screen::new(5, 3, 20);
+        s.feed(b"abcdefghijX");
+        s.resize(10, 3);
+        let text = s.text();
+        assert_eq!(text[0], "abcdefghij");
+        assert_eq!(text[1], "X");
+        s.resize(5, 3);
+        assert_eq!(s.row_text(0), "abcde");
+        assert_eq!(s.row_text(1), "fghij");
+        assert_eq!(s.row_text(2), "X");
+    }
+
+    #[test]
+    fn resize_keeps_wrapped_history_and_hard_breaks() {
+        let mut s = Screen::new(5, 2, 20);
+        s.feed(b"abcdefghijK\r\nsecond");
+        assert!(s.history_len() > 0);
+        s.resize(10, 2);
+        let lines: Vec<String> = (0..s.history_len() + s.rows()).map(|i| {
+            s.abs_line(i).unwrap().iter().map(|c| c.ch).collect::<String>().trim_end().to_string()
+        }).collect();
+        assert!(lines.windows(3).any(|w| w == ["abcdefghij", "K", "second"]), "{lines:?}");
+    }
+
+    #[test]
+    fn resize_tracks_positions_across_wrapped_lines() {
+        let mut s = Screen::new(5, 3, 20);
+        s.feed(b"abcdefghijX");
+        let mut positions = [(1, 2), (2, 0)];
+        s.resize_tracking(10, 3, &mut positions);
+        assert_eq!(positions, [(0, 7), (1, 0)]);
+    }
+
+    #[test]
+    fn resize_alternate_screen_preserves_primary_reflow() {
+        let mut s = Screen::new(5, 3, 20);
+        s.feed(b"abcdefghijX\x1b[?1049h");
+        s.resize(10, 3);
+        s.feed(b"\x1b[?1049l");
+        assert_eq!(s.row_text(0), "abcdefghij");
+        assert_eq!(s.row_text(1), "X");
+    }
+
+    #[test]
+    fn resize_reflows_wide_character_at_margin() {
+        let mut s = Screen::new(5, 3, 20);
+        s.feed("abcd界z".as_bytes());
+        s.resize(10, 3);
+        assert_eq!(s.row_text(0), "abcd界z");
+    }
+
+    #[test]
+    fn resize_preserves_pending_wrap_insertion_position() {
+        let mut s = Screen::new(5, 2, 10);
+        s.feed(b"abcde");
+        s.resize(10, 2);
+        s.feed(b"f");
+        assert_eq!(s.row_text(0), "abcdef");
     }
 
     #[test]

@@ -73,7 +73,14 @@ impl Pane {
             self.screen.resize(cols as usize, rows as usize);
             self.pty.resize(cols, rows);
             if let Some(c) = self.copy.as_mut() {
-                c.clamp(&self.screen);
+                let mut positions = [c.cursor_abs(&c.screen), c.anchor.unwrap_or(c.cursor_abs(&c.screen)), (c.top(&c.screen), 0)];
+                std::sync::Arc::make_mut(&mut c.screen).resize_tracking(cols as usize, rows as usize, &mut positions);
+                let screen = c.screen.clone();
+                if c.anchor.is_some() { c.anchor = Some(positions[1]); }
+                c.offset = screen.history_len().saturating_sub(positions[2].0.min(screen.history_len()));
+                c.cy = positions[0].0.saturating_sub(c.top(&screen)).min(screen.rows() - 1);
+                c.cx = positions[0].1;
+                c.clamp(&screen);
             }
         }
     }
@@ -360,7 +367,7 @@ pub struct Cycle {
 pub enum Drag {
     /// Selecting text in a window pane: where the press was (absolute line, column) and the
     /// pane's text area on the terminal (x, y, width, height).
-    Select { pane: PaneId, origin: (usize, usize), area: (usize, usize, usize, usize) },
+    Select { pane: PaneId, origin: (usize, usize), area: (usize, usize, usize, usize), start: (u16, u16), started: bool },
     /// Moving the border of a split.
     Border { path: Vec<bool>, axis: super::layout::Axis, rect: Rect },
     SidebarEdge,
@@ -413,6 +420,7 @@ pub struct Client {
     pub help: Option<HelpState>,
     pub drag: Option<Drag>,
     pub last_click: Option<Click>,
+    pub copy_pending: Option<(PaneId, u32, Option<char>)>,
 }
 
 impl Client {
@@ -448,6 +456,7 @@ impl Client {
             help: None,
             drag: None,
             last_click: None,
+            copy_pending: None,
         }
     }
 

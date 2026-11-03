@@ -70,6 +70,7 @@ pub enum CopyCmd {
     /// Copy the selection (or current line) and leave copy mode.
     Yank,
     Cancel,
+    Escape,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,7 +147,7 @@ pub enum Action {
 
 /// Every name `Action::from_str` accepts (the ones that take a number are listed bare).
 pub const ACTION_NAMES: &[&str] = &[
-    "command-prompt", "copy-bottom", "copy-cancel", "copy-down", "copy-half-page-down", "copy-half-page-up",
+    "command-prompt", "copy-bottom", "copy-cancel", "copy-down", "copy-escape", "copy-half-page-down", "copy-half-page-up",
     "copy-left", "copy-line-end", "copy-line-start", "copy-mode", "copy-page-down", "copy-page-up",
     "copy-right", "copy-search-backward", "copy-search-forward", "copy-search-next", "copy-search-prev",
     "copy-select", "copy-select-line", "copy-select-rect", "copy-top", "copy-up", "copy-view-bottom",
@@ -322,6 +323,7 @@ impl FromStr for Action {
             "sidebar-leave" => no_arg(Action::Sidebar(SidebarCmd::Leave)),
             "copy-yank" => no_arg(Action::Copy(CopyCmd::Yank)),
             "copy-cancel" => no_arg(Action::Copy(CopyCmd::Cancel)),
+            "copy-escape" => no_arg(Action::Copy(CopyCmd::Escape)),
             _ => Err(format!("unknown action {name:?}")),
         }
     }

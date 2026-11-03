@@ -214,4 +214,4 @@ match_current_bg = "magenta"   # the match the cursor is on
 "L" = "copy-view-bottom"
 "y" = "copy-yank"             # copy selection (or current line) and leave
 "q" = "copy-cancel"
-"Escape" = "copy-cancel"
+"Escape" = "copy-escape"

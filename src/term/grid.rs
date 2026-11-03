@@ -4,11 +4,13 @@ use super::cell::Cell;
 pub struct Grid {
     pub cols: usize,
     pub rows: Vec<Vec<Cell>>,
+    pub wrapped: Vec<bool>,
+    pub wrap_padding: Vec<bool>,
 }
 
 impl Grid {
     pub fn new(cols: usize, rows: usize) -> Self {
-        Grid { cols, rows: (0..rows).map(|_| vec![Cell::BLANK; cols]).collect() }
+        Grid { cols, rows: (0..rows).map(|_| vec![Cell::BLANK; cols]).collect(), wrapped: vec![false; rows], wrap_padding: vec![false; rows] }
     }
 
     pub fn height(&self) -> usize {
@@ -19,6 +21,8 @@ impl Grid {
         for r in &mut self.rows {
             r.fill(Cell::BLANK);
         }
+        self.wrapped.fill(false);
+        self.wrap_padding.fill(false);
     }
 }
 

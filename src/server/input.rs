@@ -79,6 +79,9 @@ impl Server {
         if let Key::Mouse(m) = ev.key {
             return self.handle_mouse(cid, m);
         }
+        if ev.key == Key::Other && ev.raw.starts_with(b"\x1b[<") {
+            return;
+        }
         // After the prefix and a group's tag, the next key is a window tag in that group.
         if let Some(gid) = c.pending_group.take() {
             c.message = None;
@@ -125,10 +128,12 @@ impl Server {
             }
         let Some(c) = self.clients.get_mut(&cid) else { return };
         if ev.combo() == self.cfg.prefix {
+            c.copy_pending = None;
             c.prefix = Some(ev.raw);
             return;
         }
         if let Some(action) = self.cfg.root_keys.get(&ev.combo()).cloned() {
+            if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = None; }
             self.run_action(cid, action, Trigger::key(ev.raw.clone()));
             return;
         }
@@ -140,12 +145,205 @@ impl Server {
             return;
         }
         if self.active_pane_in_copy_mode(cid) {
+            let pane = self.clients.get(&cid).and_then(|c| c.session)
+                .and_then(|sid| self.sessions.iter().find(|s| s.id == sid))
+                .and_then(|s| self.focused_pane_in(s));
+            let Some(pane) = pane else { return };
+            let pending = self.clients.get_mut(&cid).and_then(|c| c.copy_pending.take());
+            let (_, mut count, waiting) = pending.filter(|p| p.0 == pane).unwrap_or((pane, 0, None));
+            if ev.key == Key::Escape && (count > 0 || waiting.is_some()) {
+                if self.panes.get(&pane).and_then(|p| p.copy.as_ref()).is_some_and(|c| c.anchor.is_some()) {
+                    self.run_action(cid, Action::Copy(crate::action::CopyCmd::Escape), Trigger::key(ev.raw.clone()));
+                }
+                return;
+            }
+            if waiting == Some('Y') {
+                if ev.key == Key::Char('g')
+                    && let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut())
+                {
+                    let screen = copy.screen.clone();
+                    let start = copy.cursor_abs(&screen);
+                    copy.anchor = Some(start);
+                    copy.line_mode = true;
+                    let line = count.saturating_sub(1) as usize;
+                    copy.reveal(&screen, line.min(screen.history_len() + screen.rows() - 1), 0, false);
+                    self.run_action(cid, Action::Copy(crate::action::CopyCmd::Yank), Trigger::key(ev.raw.clone()));
+                    if let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut()) {
+                        let screen = copy.screen.clone();
+                        copy.reveal(&screen, start.0, start.1, false);
+                    }
+                }
+                return;
+            }
+            if let Some(kind @ ('1' | '2' | '3' | '4')) = waiting {
+                if let Key::Char(target) = ev.key
+                    && let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut())
+                {
+                    let screen = copy.screen.clone();
+                    let start = copy.cursor_abs(&screen);
+                    let find = match kind { '1' => 'f', '2' => 'F', '3' => 't', _ => 'T' };
+                    copy.find_char(find, target, count, true);
+                    if copy.cursor_abs(&screen) != start {
+                        copy.anchor = Some(start);
+                        self.run_action(cid, Action::Copy(crate::action::CopyCmd::Yank), Trigger::key(ev.raw.clone()));
+                        if let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut()) {
+                            let screen = copy.screen.clone();
+                            copy.reveal(&screen, start.0, start.1, false);
+                        }
+                    }
+                }
+                return;
+            }
+            if let Some(kind @ ('i' | 'a' | 'I' | 'A')) = waiting {
+                let mut selected = false;
+                if let Key::Char(object) = ev.key
+                    && let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut())
+                {
+                    selected = copy.text_object(object, matches!(kind, 'a' | 'A'));
+                }
+                if selected && matches!(kind, 'I' | 'A') {
+                    self.run_action(cid, Action::Copy(crate::action::CopyCmd::Yank), Trigger::key(ev.raw.clone()));
+                } else if selected {
+                    self.mark_dirty();
+                }
+                return;
+            }
+            if waiting == Some('y') {
+                if ev.key == Key::Char('g') {
+                    if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, Some('Y'))); }
+                    return;
+                }
+                if let Key::Char(kind @ ('i' | 'a')) = ev.key {
+                    if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, Some(kind.to_ascii_uppercase()))); }
+                    return;
+                }
+                if let Key::Char(kind @ ('f' | 'F' | 't' | 'T')) = ev.key {
+                    let kind = match kind { 'f' => '1', 'F' => '2', 't' => '3', _ => '4' };
+                    if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, Some(kind))); }
+                    return;
+                }
+                let motion = self.cfg.copy_keys.get(&ev.combo()).cloned();
+                let mut yank = false;
+                let mut restore = None;
+                if let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut()) {
+                    let screen = copy.screen.clone();
+                    let start = copy.cursor_abs(&screen);
+                    restore = Some(start);
+                    if ev.key == Key::Char('y') {
+                        copy.anchor = Some(start);
+                        copy.line_mode = true;
+                        for _ in 1..count.max(1) { copy.apply(crate::action::CopyCmd::Down, &screen); }
+                        yank = true;
+                    } else if let Key::Char(kind @ ('^' | 'W' | 'B' | 'E')) = ev.key {
+                        copy.anchor = Some(start);
+                        copy.vim_motion(kind, count);
+                        yank = true;
+                    } else if let Some(Action::Copy(cmd @ (crate::action::CopyCmd::Up | crate::action::CopyCmd::Down | crate::action::CopyCmd::Left | crate::action::CopyCmd::Right | crate::action::CopyCmd::WordNext | crate::action::CopyCmd::WordPrev | crate::action::CopyCmd::WordEnd | crate::action::CopyCmd::LineStart | crate::action::CopyCmd::LineEnd | crate::action::CopyCmd::Bottom))) = motion {
+                        copy.anchor = Some(start);
+                        for _ in 0..count.max(1) { copy.apply(cmd, &screen); }
+                        if matches!(cmd, crate::action::CopyCmd::Up | crate::action::CopyCmd::Down | crate::action::CopyCmd::Bottom) {
+                            copy.line_mode = true;
+                        } else if matches!(cmd, crate::action::CopyCmd::WordNext | crate::action::CopyCmd::Right) && copy.cursor_abs(&screen) > start {
+                            copy.apply(crate::action::CopyCmd::Left, &screen);
+                        } else if matches!(cmd, crate::action::CopyCmd::Left | crate::action::CopyCmd::WordPrev) && copy.cursor_abs(&screen) < start {
+                            copy.anchor = Some((start.0, start.1.saturating_sub(1)));
+                        }
+                        yank = true;
+                    }
+                }
+                if yank {
+                    self.run_action(cid, Action::Copy(crate::action::CopyCmd::Yank), Trigger::key(ev.raw.clone()));
+                    if let Some(pos) = restore && let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut()) {
+                        let screen = copy.screen.clone();
+                        copy.reveal(&screen, pos.0, pos.1, false);
+                    }
+                }
+                return;
+            }
+            if let Some(kind @ ('f' | 'F' | 't' | 'T')) = waiting {
+                if let Key::Char(target) = ev.key
+                    && let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut())
+                {
+                    copy.find_char(kind, target, count, true);
+                    self.mark_dirty();
+                }
+                return;
+            }
+            if let Key::Char(d @ '0'..='9') = ev.key
+                && waiting.is_none() && (d != '0' || count > 0)
+                && (d == '0' || !self.cfg.copy_keys.contains_key(&ev.combo()))
+            {
+                count = count.saturating_mul(10).saturating_add(d.to_digit(10).unwrap_or(0)).min(10000);
+                if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, None)); }
+                return;
+            }
+            if ev.key == Key::Char('g') && self.cfg.copy_keys.get(&ev.combo()) == Some(&Action::Copy(crate::action::CopyCmd::Top)) {
+                if waiting.is_none() {
+                    if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, Some('g'))); }
+                    return;
+                }
+            } else if waiting.is_some() {
+                return;
+            }
+            if let Key::Char(kind @ ('f' | 'F' | 't' | 'T')) = ev.key
+                && !self.cfg.copy_keys.contains_key(&ev.combo())
+            {
+                if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, Some(kind))); }
+                return;
+            }
+            if let Key::Char(repeat @ (';' | ',')) = ev.key
+                && !self.cfg.copy_keys.contains_key(&ev.combo())
+            {
+                if let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut())
+                    && let Some((mut kind, target)) = copy.last_find
+                {
+                    if repeat == ',' { kind = match kind { 'f' => 'F', 'F' => 'f', 't' => 'T', _ => 't' }; }
+                    copy.find_char(kind, target, count, false);
+                    self.mark_dirty();
+                }
+                return;
+            }
+            if let Key::Char(motion @ ('^' | 'W' | 'B' | 'E')) = ev.key
+                && !self.cfg.copy_keys.contains_key(&ev.combo())
+            {
+                if let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut()) {
+                    copy.vim_motion(motion, count);
+                    self.mark_dirty();
+                }
+                return;
+            }
+            if let Key::Char(kind @ ('i' | 'a')) = ev.key
+                && !self.cfg.copy_keys.contains_key(&ev.combo())
+                && self.panes.get(&pane).and_then(|p| p.copy.as_ref()).is_some_and(|c| c.anchor.is_some())
+            {
+                if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, Some(kind))); }
+                return;
+            }
+            if ev.key == Key::Char('y') && self.cfg.copy_keys.get(&ev.combo()) == Some(&Action::Copy(crate::action::CopyCmd::Yank))
+                && self.panes.get(&pane).and_then(|p| p.copy.as_ref()).is_some_and(|c| c.anchor.is_none())
+            {
+                if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = Some((pane, count, Some('y'))); }
+                return;
+            }
+            if count > 0 && ev.key == Key::Char('G') && self.cfg.copy_keys.get(&ev.combo()) == Some(&Action::Copy(crate::action::CopyCmd::Bottom)) {
+                if let Some(copy) = self.panes.get_mut(&pane).and_then(|p| p.copy.as_mut()) {
+                    let screen = copy.screen.clone();
+                    let line = (count as usize - 1).min(screen.history_len() + screen.rows() - 1);
+                    copy.reveal(&screen, line, 0, false);
+                }
+                self.mark_dirty();
+                return;
+            }
             // Copy mode swallows keys it has no binding for.
             if let Some(action) = self.cfg.copy_keys.get(&ev.combo()).cloned() {
-                self.run_action(cid, action, Trigger::key(ev.raw.clone()));
+                let repeats = if matches!(action, Action::Copy(crate::action::CopyCmd::Up | crate::action::CopyCmd::Down | crate::action::CopyCmd::Left | crate::action::CopyCmd::Right | crate::action::CopyCmd::WordNext | crate::action::CopyCmd::WordPrev | crate::action::CopyCmd::WordEnd)) { count.max(1) } else { 1 };
+                for _ in 0..repeats {
+                    self.run_action(cid, action.clone(), Trigger::key(ev.raw.clone()));
+                }
             }
             return;
         }
+        if let Some(c) = self.clients.get_mut(&cid) { c.copy_pending = None; }
         // A window that has not started has no pane to type into: `o` or Enter loads it.
         if let Some(sid) = self.unloaded_window(cid) {
             if matches!((ev.key, ev.mods), (Key::Enter, 0) | (Key::Char('o'), 0)) {

@@ -704,7 +704,8 @@ impl Server {
         let Some(active) = self.focused_pane(si) else { return };
         let Some(p) = self.panes.get_mut(&active) else { return };
         let Some(copy) = p.copy.as_mut() else { return };
-        match copy.apply(cmd, &p.screen) {
+        let screen = copy.screen.clone();
+        match copy.apply(cmd, &screen) {
             Outcome::Stay => {}
             Outcome::Exit => p.copy = None,
             Outcome::Search(forward) => {
@@ -989,7 +990,8 @@ impl Server {
                 {
                     // An empty term repeats the last one.
                     let query = if text.is_empty() { copy.search.as_ref().map(|s| s.query.clone()).unwrap_or_default() } else { text };
-                    if !query.is_empty() && !copy.search(&p.screen, query.clone(), forward) {
+                    let screen = copy.screen.clone();
+                    if !query.is_empty() && !copy.search(&screen, query.clone(), forward) {
                         self.message(cid, format!("no match for {query}"));
                     }
                 }

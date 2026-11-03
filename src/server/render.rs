@@ -429,8 +429,8 @@ fn restyle(canvas: &mut Canvas, x: usize, y: usize, n: usize, attrs: Attrs) {
 }
 
 /// Draw a pane scrolled back in copy mode, with the selection highlighted.
-fn draw_copy_view(canvas: &mut Canvas, pane: &Pane, copy: &CopyMode, (x, y, w, h): (usize, usize, usize, usize), theme: &Theme) {
-    let screen = &pane.screen;
+fn draw_copy_view(canvas: &mut Canvas, _pane: &Pane, copy: &CopyMode, (x, y, w, h): (usize, usize, usize, usize), theme: &Theme) {
+    let screen = &copy.screen;
     let top = copy.top(screen);
     let sel = copy.selection(screen);
     let rows: Vec<Vec<Cell>> = (0..h)

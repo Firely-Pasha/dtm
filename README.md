@@ -103,7 +103,7 @@ resizing by 1 cell for a second (`options.repeat_time`, `[keys.resize]`), so you
 don't have to press the prefix again for every step. Any other key ends it.
 
 **Copy mode** (`<prefix> [`, or `PageUp`): move with `k j h l`, `PageUp/Down`, `Ctrl-u/d`,
-`g`/`G` for top/bottom, `0`/`$`, the word motions `w` `b` `e`, and `H` `M` `L` for the top,
+`gg`/`G` for top/bottom, `0`/`^`/`$`, the word motions `w` `b` `e` and `W` `B` `E`, and `H` `M` `L` for the top,
 middle and bottom row of the view. `/` searches forward and `?` backward (it asks for the
 text; a term without capitals ignores case), `n` repeats the search the way it was typed
 and `N` the other way; matches are highlighted and the current one stands out
@@ -112,6 +112,8 @@ copies: the selection ends but you stay in copy mode with the cursor where it wa
 select and copy again), and `q` leaves. Copied text is kept in dtm's paste buffer and also sent
 to the terminal clipboard (OSC 52). The cursor is a steady block while you are in copy mode,
 whatever shape the program in the pane asked for.
+
+Counts repeat motions, and `[count]G` jumps to a numbered history row. `f`/`F` and `t`/`T` find a character on the row, with `;` and `,` repeating the search. In normal copy mode `yy` copies rows and `y` followed by a motion copies its range. Text objects such as `yiw`, `yaW`, `yi(` and `ya"` work with yanks and visual selections. Escape cancels a pending command or selection, then exits copy mode. Output continues in the pane while copy mode shows a frozen snapshot.
 
 **Mouse**: click a sidebar entry (or a group's title) to switch window or session,
 click a pane or a dock tab to focus it, scroll the wheel to enter copy mode (or scroll full-screen apps).

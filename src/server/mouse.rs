@@ -49,15 +49,14 @@ fn dock_pane_rows_end(pane_rows: usize, top: usize) -> usize {
 
 impl Server {
     pub fn handle_mouse(&mut self, cid: ClientId, m: MouseEvent) {
+        if m.kind == MouseKind::Press && let Some(c) = self.clients.get_mut(&cid) {
+            c.copy_pending = None;
+        }
         let Some(c) = self.clients.get(&cid) else { return };
         let Some(si) = c.session.and_then(|sid| self.sessions.iter().position(|s| s.id == sid)) else { return };
+        let client_size = (c.cols as usize, c.rows as usize);
         if c.sidebar_max && c.sidebar_focus.is_some() {
             return self.sidebar_click(cid, si, m);
-        }
-        if let Some(p) = self.sessions[si].maximized.filter(|p| self.panes.contains_key(p)) {
-            self.pane_mouse(p, &m, m.x as usize, m.y as usize);
-            self.mark_dirty();
-            return;
         }
         // A drag in progress gets its motion and release wherever the pointer is.
         if c.drag.is_some() {
@@ -70,6 +69,15 @@ impl Server {
                 }
                 _ => {}
             }
+        }
+        if let Some(p) = self.sessions[si].maximized.filter(|p| self.panes.contains_key(p)) {
+            self.pane_mouse(p, &m, m.x as usize, m.y as usize);
+            if m.kind == MouseKind::Press && m.button == 0 {
+                let area = (0, 0, client_size.0, client_size.1);
+                self.begin_select(cid, p, area, (m.x as usize, m.y as usize), &m);
+            }
+            self.mark_dirty();
+            return;
         }
         let Some(c) = self.clients.get(&cid) else { return };
         let left_press = m.kind == MouseKind::Press && m.button == 0;
@@ -92,14 +100,14 @@ impl Server {
             return self.sidebar_click(cid, si, m);
         }
         if self.sessions[si].shown_popup().is_some() {
-            return self.popup_mouse(si, content_x, m);
+            return self.popup_mouse(cid, si, content_x, m);
         }
         if dw > 0 && x >= dock_x && x < dock_x + dw {
             let edge = if left_side { dock_x } else { dock_x + dw - 1 };
             if left_press && x == edge {
                 return self.start_drag(cid, Drag::DockEdge);
             }
-            return self.dock_mouse(si, dock_x, dw, m);
+            return self.dock_mouse(cid, si, dock_x, dw, m);
         }
         if x < content_x || x >= content_x + cw {
             return;
@@ -157,7 +165,7 @@ impl Server {
         if p.screen.modes().mouse != MouseTracking::Off && p.copy.is_none() {
             return;
         }
-        let top = p.copy.as_ref().map_or(p.screen.history_len(), |c| c.top(&p.screen));
+        let top = p.copy.as_ref().map_or(p.screen.history_len(), |c| c.top(&c.screen));
         let origin = (top + ry, rx);
         let now = Instant::now();
         let Some(c) = self.clients.get_mut(&cid) else { return };
@@ -166,7 +174,7 @@ impl Server {
             _ => 1,
         };
         c.last_click = Some(Click { at: now, x: m.x, y: m.y, count });
-        c.drag = Some(Drag::Select { pane: pane_id, origin, area });
+        c.drag = Some(Drag::Select { pane: pane_id, origin, area, start: (m.x, m.y), started: count >= 2 });
         if count >= 2 {
             self.select_unit(pane_id, origin, count);
         }
@@ -175,18 +183,19 @@ impl Server {
     /// Select the word (`count` 2) or the line (3) at `origin`, in copy mode.
     fn select_unit(&mut self, pane_id: PaneId, origin: (usize, usize), count: u8) {
         let Some(p) = self.panes.get_mut(&pane_id) else { return };
-        let screen = &p.screen;
-        let copy = p.copy.get_or_insert_with(|| CopyMode::new(screen));
+        let copy = p.copy.get_or_insert_with(|| CopyMode::new(&p.screen));
+        copy.wheel_started = false;
+        let screen = copy.screen.clone();
         copy.rect = false;
         if count == 2 {
-            let (first, last) = word_at(screen, origin.0, origin.1);
+            let (first, last) = word_at(&screen, origin.0, origin.1);
             copy.anchor = Some((origin.0, first));
             copy.line_mode = false;
-            copy.reveal(screen, origin.0, last, false);
+            copy.reveal(&screen, origin.0, last, false);
         } else {
             copy.anchor = Some((origin.0, 0));
             copy.line_mode = true;
-            copy.reveal(screen, origin.0, origin.1, false);
+            copy.reveal(&screen, origin.0, origin.1, false);
         }
     }
 
@@ -198,8 +207,16 @@ impl Server {
             c.drag = None;
         }
         match drag {
-            Drag::Select { pane, origin, area } => {
+            Drag::Select { pane, origin, area, start, started } => {
                 if !release {
+                    if !started && (m.x, m.y) == start {
+                        return;
+                    }
+                    if !started && let Some(c) = self.clients.get_mut(&cid)
+                        && let Some(Drag::Select { started, .. }) = c.drag.as_mut()
+                    {
+                        *started = true;
+                    }
                     self.drag_select(pane, origin, area, &m);
                 } else if self.panes.get(&pane).and_then(|p| p.copy.as_ref()).is_some_and(|c| c.anchor.is_some()) {
                     self.message(cid, "y copies the selection");
@@ -239,21 +256,22 @@ impl Server {
     /// while the pointer is above or below its text.
     fn drag_select(&mut self, pane_id: PaneId, origin: (usize, usize), area: (usize, usize, usize, usize), m: &MouseEvent) {
         let Some(p) = self.panes.get_mut(&pane_id) else { return };
-        let screen = &p.screen;
-        let copy = p.copy.get_or_insert_with(|| CopyMode::new(screen));
+        let copy = p.copy.get_or_insert_with(|| CopyMode::new(&p.screen));
+        copy.wheel_started = false;
+        let screen = copy.screen.clone();
         let (ax, ay, aw, ah) = area;
         let (x, y) = (m.x as usize, m.y as usize);
         if y < ay {
-            copy.scroll(1, screen);
+            copy.scroll(1, &screen);
         } else if y >= ay + ah {
-            copy.scroll(-1, screen);
+            copy.scroll(-1, &screen);
         }
         copy.anchor = Some(origin);
         copy.line_mode = false;
         copy.rect = false;
         copy.cx = x.saturating_sub(ax).min(aw.saturating_sub(1));
         copy.cy = y.saturating_sub(ay).min(ah.saturating_sub(1));
-        copy.clamp(screen);
+        copy.clamp(&screen);
     }
 
     /// The terminal column where the session's panes start.
@@ -328,7 +346,7 @@ impl Server {
     }
 
     /// Events over the popup go to it; everything else is ignored while it is up.
-    fn popup_mouse(&mut self, si: usize, content_x: usize, m: MouseEvent) {
+    fn popup_mouse(&mut self, cid: ClientId, si: usize, content_x: usize, m: MouseEvent) {
         let s = &self.sessions[si];
         let Some(pane) = s.shown_popup() else { return };
         let inner = self.popup_inner(s.size);
@@ -336,11 +354,14 @@ impl Server {
         let (ix, iy) = (content_x + inner.x as usize, inner.y as usize);
         if x >= ix && y >= iy && x < ix + inner.w as usize && y < iy + inner.h as usize {
             self.pane_mouse(pane, &m, x - ix, y - iy);
+            if m.kind == MouseKind::Press && m.button == 0 {
+                self.begin_select(cid, pane, (ix, iy, inner.w as usize, inner.h as usize), (x - ix, y - iy), &m);
+            }
             self.mark_dirty();
         }
     }
 
-    fn dock_mouse(&mut self, si: usize, dock_x: usize, dw: usize, m: MouseEvent) {
+    fn dock_mouse(&mut self, cid: ClientId, si: usize, dock_x: usize, dw: usize, m: MouseEvent) {
         let sep_left = self.cfg.sidebar.position == Position::Left;
         let islands = self.cfg.islands;
         let mut px = if sep_left { dock_x + 1 } else { dock_x };
@@ -383,6 +404,10 @@ impl Server {
             return;
         }
         self.pane_mouse(pane, &m, x - px, y - top - 1);
+        if m.kind == MouseKind::Press && m.button == 0 {
+            let height = self.sessions[si].dock_size.1 as usize;
+            self.begin_select(cid, pane, (px, top + 1, pw, height), (x - px, y - top - 1), &m);
+        }
         self.mark_dirty();
     }
 
@@ -392,15 +417,16 @@ impl Server {
         let wheel = matches!(m.kind, MouseKind::WheelUp | MouseKind::WheelDown);
         let up = m.kind == MouseKind::WheelUp;
         if let Some(copy) = p.copy.as_mut() {
+            let screen = copy.screen.clone();
             if wheel {
-                let live = copy.scroll(if up { WHEEL_LINES } else { -WHEEL_LINES }, &p.screen);
-                if live && !up {
+                let live = copy.scroll(if up { WHEEL_LINES } else { -WHEEL_LINES }, &screen);
+                if live && !up && copy.wheel_started && copy.anchor.is_none() {
                     p.copy = None;
                 }
             } else if m.kind == MouseKind::Press && m.button == 0 {
                 copy.cx = rx;
                 copy.cy = ry;
-                copy.clamp(&p.screen);
+                copy.clamp(&screen);
             }
             return;
         }
@@ -413,21 +439,11 @@ impl Server {
             if let Some(bytes) = encode_mouse(m, rx, ry, modes.mouse_sgr) {
                 p.pty.write(bytes);
             }
-        } else if wheel && modes.mouse == MouseTracking::Off {
-            if modes.alt_screen {
-                // Full-screen apps without mouse support: scroll with arrow keys.
-                let key: &[u8] = match (up, modes.app_cursor) {
-                    (true, true) => b"\x1bOA",
-                    (true, false) => b"\x1b[A",
-                    (false, true) => b"\x1bOB",
-                    (false, false) => b"\x1b[B",
-                };
-                p.pty.write(key.repeat(WHEEL_LINES as usize));
-            } else if up {
-                let mut copy = CopyMode::new(&p.screen);
-                copy.scroll(WHEEL_LINES, &p.screen);
-                p.copy = Some(copy);
-            }
+        } else if wheel && modes.mouse == MouseTracking::Off && !modes.alt_screen && up {
+            let mut copy = CopyMode::new(&p.screen);
+            copy.wheel_started = true;
+            copy.scroll(WHEEL_LINES, &p.screen);
+            p.copy = Some(copy);
         }
     }
 

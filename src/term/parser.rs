@@ -36,6 +36,7 @@ enum State {
 const MAX_PARAMS: usize = 32;
 const MAX_OSC: usize = 4096;
 
+#[derive(Clone)]
 pub struct Parser {
     state: State,
     params: Vec<Vec<u16>>,

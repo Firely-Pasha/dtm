@@ -368,7 +368,7 @@ const DEFAULT_COPY_KEYS: &[(&str, &str)] = &[
     ("y", "copy-yank"),
     ("Enter", "copy-yank"),
     ("q", "copy-cancel"),
-    ("Escape", "copy-cancel"),
+    ("Escape", "copy-escape"),
 ];
 
 fn default_table(defaults: &[(&str, &str)]) -> HashMap<KeyCombo, Action> {
@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(c.root_keys[&(Key::Char('n'), ALT)], Action::NextWindow);
         assert_eq!(c.copy_keys[&(Key::Char('x'), 0)], Action::Copy(CopyCmd::Yank));
         assert!(!c.copy_keys.contains_key(&(Key::Char('q'), 0)));
-        assert_eq!(c.copy_keys[&(Key::Escape, 0)], Action::Copy(CopyCmd::Cancel));
+        assert_eq!(c.copy_keys[&(Key::Escape, 0)], Action::Copy(CopyCmd::Escape));
         // untouched defaults remain
         assert_eq!(c.prefix_keys[&(Key::Char('z'), 0)], Action::ZoomPane);
     }

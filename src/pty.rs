@@ -153,7 +153,21 @@ impl Pty {
     /// Command line of the foreground job, or `None` while the shell itself is in front.
     pub fn foreground_cmdline(&self) -> Option<String> {
         let pg = self.foreground_pgrp().filter(|&pg| pg != self.pid as i32)?;
-        let args = crate::sysproc::cmdline(pg)?;
+        let mut args = crate::sysproc::cmdline(pg)?;
+        if let Some(program) = args.first_mut() {
+            let path = Path::new(program);
+            if path.is_absolute()
+                && let Some(name) = path.file_name()
+                && let Some(search) = std::env::var_os("PATH")
+                && let Some(found) = std::env::split_paths(&search).map(|dir| dir.join(name)).find(|p| {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                })
+                && std::fs::canonicalize(&found).ok().zip(std::fs::canonicalize(path).ok()).is_some_and(|(a, b)| a == b)
+            {
+                *program = name.to_string_lossy().into_owned();
+            }
+        }
         (!args.is_empty()).then(|| crate::project::quote_args(&args))
     }
 

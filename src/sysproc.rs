@@ -17,7 +17,8 @@ mod imp {
 
     pub fn cmdline(pid: i32) -> Option<Vec<String>> {
         let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-        Some(raw.split(|&b| b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
+        let raw = raw.strip_suffix(&[0]).unwrap_or(&raw);
+        Some(raw.split(|&b| b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
     }
 
     /// Names of the live (not stopped, dead or zombie) members of a process group.

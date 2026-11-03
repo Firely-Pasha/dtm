@@ -131,8 +131,10 @@ fn word_prev(s: &Screen, from: (usize, usize)) -> (usize, usize) {
     p
 }
 
-#[derive(Clone, Debug, Default)]
 pub struct CopyMode {
+    pub screen: std::sync::Arc<Screen>,
+    pub wheel_started: bool,
+    pub last_find: Option<(char, char)>,
     /// Lines scrolled back from the live screen.
     pub offset: usize,
     /// Cursor in viewport coordinates.
@@ -161,7 +163,132 @@ pub enum Outcome {
 impl CopyMode {
     pub fn new(screen: &Screen) -> CopyMode {
         let (cx, cy) = screen.cursor_pos();
-        CopyMode { offset: 0, cx, cy, anchor: None, line_mode: false, rect: false, search: None }
+        CopyMode { screen: std::sync::Arc::new(screen.clone()), wheel_started: false, last_find: None, offset: 0, cx, cy, anchor: None, line_mode: false, rect: false, search: None }
+    }
+
+    pub fn find_char(&mut self, kind: char, target: char, count: u32, remember: bool) {
+        if remember { self.last_find = Some((kind, target)); }
+        let line = self.cursor_abs(&self.screen).0;
+        let Some(cells) = self.screen.abs_line(line) else { return };
+        let forward = matches!(kind, 'f' | 't');
+        let mut pos = self.cx;
+        if !remember && kind == 't' && cells.get(pos + 1).is_some_and(|c| c.ch == target) {
+            pos += 1;
+        } else if !remember && kind == 'T' && pos > 0 && cells[pos - 1].ch == target {
+            pos -= 1;
+        }
+        for _ in 0..count.max(1) {
+            let found = if forward {
+                ((pos + 1)..cells.len()).find(|&i| cells[i].width != 0 && cells[i].ch == target)
+            } else {
+                (0..pos).rev().find(|&i| cells[i].width != 0 && cells[i].ch == target)
+            };
+            let Some(next) = found else { return };
+            pos = next;
+        }
+        self.cx = match kind {
+            't' => pos.saturating_sub(1),
+            'T' => (pos + 1).min(cells.len().saturating_sub(1)),
+            _ => pos,
+        };
+    }
+
+    pub fn vim_motion(&mut self, motion: char, count: u32) {
+        let screen = self.screen.clone();
+        let mut pos = self.cursor_abs(&screen);
+        if motion == '^' {
+            if let Some(row) = screen.abs_line(pos.0) {
+                pos.1 = row.iter().position(|c| !c.ch.is_whitespace()).unwrap_or(0);
+            }
+        } else {
+            let nonblank = |p: (usize, usize)| class(&screen, p.0, p.1) != 0;
+            for _ in 0..count.max(1) {
+                match motion {
+                    'W' => {
+                        while nonblank(pos) { match next_pos(&screen, pos) { Some(n) => pos = n, None => break } }
+                        while !nonblank(pos) { match next_pos(&screen, pos) { Some(n) => pos = n, None => break } }
+                    }
+                    'B' => {
+                        if let Some(n) = prev_pos(&screen, pos) { pos = n; }
+                        while !nonblank(pos) { match prev_pos(&screen, pos) { Some(n) => pos = n, None => break } }
+                        while let Some(n) = prev_pos(&screen, pos).filter(|&p| nonblank(p)) { pos = n; }
+                    }
+                    'E' => {
+                        if let Some(n) = next_pos(&screen, pos) { pos = n; }
+                        while !nonblank(pos) { match next_pos(&screen, pos) { Some(n) => pos = n, None => break } }
+                        while let Some(n) = next_pos(&screen, pos).filter(|&p| nonblank(p)) { pos = n; }
+                    }
+                    _ => break,
+                }
+            }
+        }
+        self.reveal(&screen, pos.0, pos.1, false);
+    }
+
+    /// Select a Vim text object around the copy cursor.
+    pub fn text_object(&mut self, object: char, around: bool) -> bool {
+        let screen = self.screen.clone();
+        let pos = self.cursor_abs(&screen);
+        let Some(row) = screen.abs_line(pos.0) else { return false };
+        let bounds = match object {
+            'w' | 'W' => {
+                let classify = |i: usize| if object == 'w' { class(&screen, pos.0, i) } else if row[i].ch.is_whitespace() { 0 } else { 1 };
+                let kind = classify(pos.1);
+                let mut start = pos.1;
+                let mut end = pos.1;
+                while start > 0 && classify(start - 1) == kind { start -= 1; }
+                while end + 1 < row.len() && classify(end + 1) == kind { end += 1; }
+                if around {
+                    let old_end = end;
+                    while end + 1 < row.len() && classify(end + 1) == 0 { end += 1; }
+                    if end == old_end { while start > 0 && classify(start - 1) == 0 { start -= 1; } }
+                }
+                Some(((pos.0, start), (pos.0, end)))
+            }
+            '\'' | '"' | '`' => {
+                let mut quotes = Vec::new();
+                let mut slashes = 0;
+                for (i, cell) in row.iter().enumerate() {
+                    if cell.ch == object && slashes % 2 == 0 { quotes.push(i); }
+                    if cell.ch == '\\' { slashes += 1; } else { slashes = 0; }
+                }
+                quotes.as_chunks::<2>().0.iter().find(|p| p[0] <= pos.1 && pos.1 <= p[1]).and_then(|p| {
+                    let (start, end) = if around { (p[0], p[1]) } else { (p[0] + 1, p[1].saturating_sub(1)) };
+                    (start <= end).then_some(((pos.0, start), (pos.0, end)))
+                })
+            }
+            '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' => {
+                let (open, close) = match object { '(' | ')' => ('(', ')'), '[' | ']' => ('[', ']'), '{' | '}' => ('{', '}'), _ => ('<', '>') };
+                let mut stack = Vec::new();
+                let mut best = None;
+                for line in 0..screen.history_len() + screen.rows() {
+                    if let Some(cells) = screen.abs_line(line) {
+                        for (col, cell) in cells.iter().enumerate() {
+                            let p = (line, col);
+                            if cell.ch == open { stack.push(p); }
+                            if cell.ch == close && let Some(start) = stack.pop() && start <= pos && pos <= p
+                                && best.is_none_or(|(old, _)| start > old) {
+                                best = Some((start, p));
+                            }
+                        }
+                    }
+                }
+                best.and_then(|(start, end)| {
+                    if around { Some((start, end)) } else {
+                        let first = next_pos(&screen, start)?;
+                        let last = prev_pos(&screen, end)?;
+                        (first <= last).then_some((first, last))
+                    }
+                })
+            }
+            _ => None,
+        };
+        let Some((start, end)) = bounds else { return false };
+        self.anchor = Some(start);
+        self.line_mode = false;
+        self.rect = false;
+        self.reveal(&screen, end.0, end.1, false);
+        true
     }
 
     /// Absolute index of the first visible line.
@@ -363,6 +490,13 @@ impl CopyMode {
                 return Outcome::Yanked(text);
             }
             CopyCmd::Cancel => return Outcome::Exit,
+            CopyCmd::Escape => {
+                if self.anchor.take().is_none() {
+                    return Outcome::Exit;
+                }
+                self.line_mode = false;
+                self.rect = false;
+            }
         }
         Outcome::Stay
     }
@@ -424,7 +558,7 @@ impl CopyMode {
                 .filter(|(x, c)| *x >= from && *x < to && c.width != 0)
                 .map(|(_, c)| c.ch)
                 .collect();
-            lines.push(text.trim_end().to_string());
+            lines.push(if to >= cells.len() { text.trim_end().to_string() } else { text });
         }
         lines.join("\n")
     }
@@ -592,6 +726,61 @@ mod tests {
         let s = screen();
         let mut m = CopyMode::new(&s);
         assert_eq!(m.apply(CopyCmd::Cancel, &s), Outcome::Exit);
+    }
+
+    #[test]
+    fn escape_clears_visual_selection_before_exiting() {
+        let screen = Screen::new(10, 4, 10);
+        let mut copy = CopyMode::new(&screen);
+        for command in [CopyCmd::Select, CopyCmd::SelectLine, CopyCmd::SelectRect] {
+            copy.apply(command, &screen);
+            assert!(copy.anchor.is_some());
+            assert_eq!(copy.apply(CopyCmd::Escape, &screen), Outcome::Stay);
+            assert!(copy.anchor.is_none());
+        }
+        assert_eq!(copy.apply(CopyCmd::Escape, &screen), Outcome::Exit);
+    }
+
+    #[test]
+    fn copy_screen_is_a_snapshot() {
+        let mut screen = Screen::new(10, 2, 10);
+        screen.feed(b"before");
+        let copy = CopyMode::new(&screen);
+        screen.feed(b"\rchange");
+        assert_eq!(copy.screen.row_text(0), "before");
+        assert_eq!(screen.row_text(0), "change");
+    }
+
+    #[test]
+    fn vim_find_and_word_motions_use_frozen_content() {
+        let mut screen = Screen::new(24, 2, 10);
+        screen.feed(b"one-two three two");
+        let mut copy = CopyMode::new(&screen);
+        copy.cx = 0;
+        copy.find_char('f', 't', 2, true);
+        assert_eq!(copy.cx, 8);
+        copy.vim_motion('W', 1);
+        assert_eq!(copy.cx, 14);
+        copy.vim_motion('B', 1);
+        assert_eq!(copy.cx, 8);
+        copy.vim_motion('^', 1);
+        assert_eq!(copy.cx, 0);
+    }
+
+    #[test]
+    fn text_objects_select_words_quotes_and_nested_brackets() {
+        let mut screen = Screen::new(32, 2, 10);
+        screen.feed(b"one (two [three]) \"four\"");
+        let mut copy = CopyMode::new(&screen);
+        copy.cx = 11;
+        assert!(copy.text_object(']', false));
+        assert_eq!(copy.selected_text(&screen), "three");
+        copy.cx = 20;
+        assert!(copy.text_object('"', true));
+        assert_eq!(copy.selected_text(&screen), "\"four\"");
+        copy.cx = 1;
+        assert!(copy.text_object('w', true));
+        assert_eq!(copy.selected_text(&screen), "one ");
     }
 
     #[test]
